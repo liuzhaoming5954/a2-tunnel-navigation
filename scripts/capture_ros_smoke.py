@@ -95,10 +95,12 @@ def run():
                     raise RuntimeError("synthetic publisher did not start")
                 time.sleep(0.05)
             session = work / "capture"
+            # The recorder is a new DDS participant; allow discovery time on CI
+            # after preflight's separate participant has already exited.
             subprocess.run([sys.executable, str(ROOT / "scripts/a2_capture.py"), "record",
-                            "--config", str(config), "--session", str(session), "--duration", "3",
+                            "--config", str(config), "--session", str(session), "--duration", "10",
                             "--discovery-seconds", "2", "--sample-seconds", "1",
-                            "--min-free-gib", "0.1", "--execute"], check=True, timeout=40)
+                            "--min-free-gib", "0.1", "--execute"], check=True, timeout=90)
             report_path = work / "report.json"
             subprocess.run([sys.executable, str(ROOT / "scripts/inspect_mapping_bag.py"), str(session / "bag"),
                             "--config", str(config), "--output", str(report_path)], check=True, timeout=15)
