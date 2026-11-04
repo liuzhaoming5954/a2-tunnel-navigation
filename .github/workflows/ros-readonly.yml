@@ -38,16 +38,22 @@ jobs:
           colcon test --packages-select a2_platform --return-code-on-test-failure
           colcon test-result --verbose
       - name: Verify mock ROS state, diagnostics and query service
+        env:
+          ROS_DOMAIN_ID: "61"
         run: |
           source /opt/ros/jazzy/setup.bash
           source install/local_setup.bash
           python3 scripts/readonly_smoke.py
       - name: Verify hardware-free mission lifecycle and persistent restart
+        env:
+          ROS_DOMAIN_ID: "62"
         run: |
           source /opt/ros/jazzy/setup.bash
           source install/local_setup.bash
           python3 scripts/mission_ros_smoke.py
       - name: Test actual rosbag inspection and synthetic sensor capture
+        env:
+          ROS_DOMAIN_ID: "78"
         run: |
           source /opt/ros/jazzy/setup.bash
           python3 -m unittest discover -s scripts/test -v

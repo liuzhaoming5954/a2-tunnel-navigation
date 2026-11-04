@@ -104,11 +104,12 @@ def main():
         process = subprocess.Popen(
             ["ros2", "run", "a2_platform", "readonly_node", "--ros-args",
              "-p", "source:=mock", "-p", f"robot_id:={robot_id}",
-             "-p", "mock_drop_after_s:=3.0", "-p", "stale_timeout_ms:=400",
+             "-p", "mock_drop_after_s:=8.0", "-p", "stale_timeout_ms:=400",
              "-p", "publish_period_ms:=100"],
             stdout=node_log, stderr=subprocess.STDOUT, start_new_session=True,
         )
-        deadline = time.monotonic() + 12.0
+        # Preserve a fresh-input phase despite cold DDS discovery on CI.
+        deadline = time.monotonic() + 20.0
         future = None
         service_ok = False
         while time.monotonic() < deadline:
@@ -136,7 +137,7 @@ def main():
                 break
         if not service_ok:
             raise RuntimeError(
-                "Timed out after 12s: "
+                "Timed out after 20s: "
                 f"fresh={observed['fresh']}, stale={len(observed['stale'])}, "
                 f"stale_diagnostic={observed['stale_diagnostic']}, "
                 f"service_ready={client.service_is_ready()}. "

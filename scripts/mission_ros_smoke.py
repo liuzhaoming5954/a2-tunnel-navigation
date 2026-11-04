@@ -43,7 +43,9 @@ def main():
                 "states": set(), "receipts": 0}
     public_text = deque(maxlen=200)
     credentials = set()
-    deadline = time.monotonic() + 30.0
+    # Includes three cold starts, service rediscovery and the dropout fixture;
+    # this is a test harness budget, not a robot health or stop deadline.
+    deadline = time.monotonic() + 90.0
     process = None
     node = None
     initialized = False
@@ -88,7 +90,7 @@ def main():
         if process is not None and process.poll() is not None:
             raise RuntimeError(f"Mock bringup exited early with status {process.returncode}")
         if time.monotonic() >= deadline:
-            raise RuntimeError("Mission smoke exceeded its 30s observation budget")
+            raise RuntimeError("Mission smoke exceeded its 90s observation budget")
 
     def wait_for(predicate, description, timeout=10.0):
         until = min(deadline, time.monotonic() + timeout)
@@ -100,7 +102,9 @@ def main():
         raise RuntimeError(f"Timed out waiting for {description}")
 
     def call(client, request, description, timeout=3.0):
-        wait_for(client.service_is_ready, f"{description} service", timeout)
+        # DDS discovery has a separate startup budget; actual RPC responses
+        # retain their original deadline once the service is discovered.
+        wait_for(client.service_is_ready, f"{description} service", max(10.0, timeout))
         future = client.call_async(request)
         until = min(deadline, time.monotonic() + timeout)
         while not future.done() and time.monotonic() < until:
@@ -265,7 +269,9 @@ def main():
         # An actual mock-source dropout must drive the task into a latched fault.
         mission_id += "-dropout"
         database = str(Path(data_directory.name) / "dropout.sqlite")
-        drop_after = 3.0
+        # Allow discovery and explicit start before this synthetic source drops.
+        # The controller's stale/health rules and fault assertions stay unchanged.
+        drop_after = 20.0
         previous_platform = observed["platform_session"]
         process = launch()
         wait_for(lambda: observed["platform_session"] not in {None, previous_platform},
@@ -278,7 +284,8 @@ def main():
         command("drop-start", "start", MissionStatus.INSPECTING, authorization_id=token)
         wait_for(lambda: (faulted := query()) is not None and
                  faulted.current.state == MissionStatus.PAUSED_FAULT and
-                 not faulted.mock_platform_healthy, "task fault after real mock-state dropout")
+                 not faulted.mock_platform_healthy, "task fault after real mock-state dropout",
+                 timeout=drop_after + 5.0)
         command("drop-clear-denied", "clear_fault", MissionStatus.PAUSED_FAULT, accepted=False,
                 operator_id="mock-operator", local_confirmation=True)
         command("drop-cancel", "cancel", MissionStatus.CANCELLED)
