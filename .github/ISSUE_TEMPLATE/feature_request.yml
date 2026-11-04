@@ -1,0 +1,32 @@
+name: 功能或设计变更
+description: 说明需求、接口影响及验收方法
+title: "[Feature] "
+body:
+  - type: textarea
+    id: requirement
+    attributes:
+      label: 使用场景与目标
+      description: 说明要解决的问题及所属 M0–M4 阶段。
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 范围与接口影响
+      description: 列出涉及的 ROS 包、配置、消息、持久化版本或控制授权变化。
+    validations:
+      required: true
+  - type: textarea
+    id: offline
+    attributes:
+      label: 离线行为与异常处理
+      description: 说明无外网时如何运行，失败、取消或重启后的处理。
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收方式
+      description: 区分本机验证与 A2 实机验证，写出可判定的通过条件。
+    validations:
+      required: true

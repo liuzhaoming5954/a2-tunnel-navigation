@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>a2_bringup</name>
+  <version>0.1.0</version>
+  <description>Mock-only launch composition for the platform and offline mission.</description>
+  <!-- Placeholder identity until project ownership is confirmed. -->
+  <maintainer email="maintainers@example.invalid">Project Maintainers</maintainer>
+  <license>LicenseRef-Proprietary</license>
+  <buildtool_depend>ament_python</buildtool_depend>
+  <exec_depend>python3</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>a2_platform</exec_depend>
+  <exec_depend>a2_mission</exec_depend>
+  <test_depend>python3-pytest</test_depend>
+  <export><build_type>ament_python</build_type></export>
+</package>

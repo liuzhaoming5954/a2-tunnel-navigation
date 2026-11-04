@@ -1,0 +1,10 @@
+# Empty request: observation only, with no command or state mutation.
+---
+# Whether the controller observation can be read. Idle still means available=true.
+bool available
+bool has_mission
+a2_interfaces/MissionStatus current
+bool storage_fault_latched
+# Synthetic adapter readiness only, never hardware or motion health.
+bool mock_platform_healthy
+string error_code

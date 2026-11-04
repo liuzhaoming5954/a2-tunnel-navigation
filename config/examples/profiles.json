@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "status": "mock_launch_available_other_profiles_design_only",
+  "default_profile": "mock",
+  "profiles": {
+    "mock": {
+      "hardware_access": false,
+      "unitree_sdk_loaded": false,
+      "motion_output": false,
+      "use_sim_time": false,
+      "requires_local_motion_authorization": false,
+      "availability": "mock_launch_available",
+      "entrypoint": "ros2 launch a2_bringup mock.launch.py"
+    },
+    "replay": {
+      "hardware_access": false,
+      "unitree_sdk_loaded": false,
+      "motion_output": false,
+      "use_sim_time": true,
+      "requires_local_motion_authorization": false,
+      "topic_policy": "sensor_and_state_allowlist_only_no_control_or_authorization",
+      "availability": "full_profile_not_implemented"
+    },
+    "robot_readonly": {
+      "hardware_access": true,
+      "unitree_sdk_loaded": true,
+      "motion_output": false,
+      "use_sim_time": false,
+      "requires_local_motion_authorization": false,
+      "sdk_policy": "state_subscription_only_no_motion_client",
+      "availability": "full_profile_not_implemented"
+    },
+    "robot_motion": {
+      "hardware_access": true,
+      "unitree_sdk_loaded": true,
+      "motion_output": true,
+      "use_sim_time": false,
+      "requires_local_motion_authorization": true,
+      "requires_stage_acceptance_evidence": true,
+      "startup_motion_authorized": false,
+      "availability": "full_profile_not_implemented"
+    }
+  }
+}

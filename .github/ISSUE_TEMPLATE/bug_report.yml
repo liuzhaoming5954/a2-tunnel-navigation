@@ -1,0 +1,40 @@
+name: 缺陷报告
+description: 记录可复现的问题及其测试环境
+title: "[Bug] "
+body:
+  - type: dropdown
+    id: environment
+    attributes:
+      label: 发现环境
+      options:
+        - 本机静态检查或单元测试
+        - 本机模拟设备或录包回放
+        - A2 静止接入测试
+        - A2 受控运动测试
+        - A2 离线全程测试
+    validations:
+      required: true
+  - type: textarea
+    id: versions
+    attributes:
+      label: 版本与工况
+      description: 填写提交 SHA、配置/地图/任务包版本、ROS 发行版、CPU 架构及相关载荷。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤、预期与实际行为
+      description: 如涉及运动，说明实际底盘行为、授权状态、停车结果和故障终态。
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 测试证据
+      description: 提供已脱敏的日志片段或受控证据索引；不要上传现场地图、原始录包、照片或凭据。
+  - type: textarea
+    id: impact
+    attributes:
+      label: 影响与临时处置
+      description: 说明受影响模块、是否阻断下一测试阶段及已尝试的处置。

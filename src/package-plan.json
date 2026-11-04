@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "status": "core_implementation_started",
+  "packages": [
+    {
+      "name": "a2_interfaces",
+      "path": "src/a2_interfaces",
+      "status": "in_progress",
+      "implementation": "ROS 2 msg/srv/action",
+      "responsibility": "公共消息、动作、结果与状态枚举"
+    },
+    {
+      "name": "a2_description",
+      "path": "src/a2_description",
+      "status": "planned",
+      "implementation": "URDF/Xacro/config",
+      "responsibility": "机身模型、传感器外参和唯一静态TF发布配置"
+    },
+    {
+      "name": "a2_platform",
+      "path": "src/a2_platform",
+      "status": "in_progress",
+      "implementation": "C++17",
+      "responsibility": "设备状态接入、平台适配及唯一Unitree运动调用出口"
+    },
+    {
+      "name": "a2_localization",
+      "path": "src/a2_localization",
+      "status": "planned",
+      "implementation": "C++17",
+      "responsibility": "点云/时间/位姿适配、地标质量与定位健康"
+    },
+    {
+      "name": "a2_navigation",
+      "path": "src/a2_navigation",
+      "status": "planned",
+      "implementation": "C++17",
+      "responsibility": "固定路线执行、路线进度和桩前对准"
+    },
+    {
+      "name": "a2_safety",
+      "path": "src/a2_safety",
+      "status": "planned",
+      "implementation": "C++17",
+      "responsibility": "健康汇总、运动授权、速度仲裁和防撞配置"
+    },
+    {
+      "name": "a2_mission",
+      "path": "src/a2_mission",
+      "status": "in_progress",
+      "implementation": "Python 3",
+      "responsibility": "离线任务状态机、点位调度和能量预算"
+    },
+    {
+      "name": "a2_payloads",
+      "path": "src/a2_payloads",
+      "status": "planned",
+      "implementation": "Python 3 / C++17",
+      "responsibility": "云台抓拍、气体采集和载荷诊断"
+    },
+    {
+      "name": "a2_storage",
+      "path": "src/a2_storage",
+      "status": "in_progress",
+      "implementation": "Python 3",
+      "responsibility": "SQLite、媒体提交、检查点和同步水位"
+    },
+    {
+      "name": "a2_gateway",
+      "path": "src/a2_gateway",
+      "status": "planned",
+      "implementation": "Python 3",
+      "responsibility": "维护期WSS/HTTPS连接、命令映射和成果同步"
+    },
+    {
+      "name": "a2_bringup",
+      "path": "src/a2_bringup",
+      "status": "in_progress",
+      "implementation": "Python launch / config",
+      "responsibility": "四种profile、配置加载及生命周期组合"
+    },
+    {
+      "name": "a2_test_support",
+      "path": "src/a2_test_support",
+      "status": "planned",
+      "implementation": "Python 3 / C++17",
+      "responsibility": "模拟设备、可注入时钟、合成数据和回放支持"
+    }
+  ]
+}

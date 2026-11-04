@@ -1,0 +1,5 @@
+# Development image builds only need the Dockerfile; never send field data.
+**
+!docker/
+!docker/development/
+!docker/development/Dockerfile

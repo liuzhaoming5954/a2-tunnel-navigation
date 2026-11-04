@@ -1,0 +1,55 @@
+name: ros-readonly
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  jazzy-mock:
+    runs-on: ubuntu-24.04
+    container: ros:jazzy-ros-base-noble
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    env:
+      ROS_LOCALHOST_ONLY: "1"
+      ROS_DOMAIN_ID: "42"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install mock build and test dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential cmake python3-colcon-common-extensions ros-jazzy-rosidl-default-generators ros-jazzy-diagnostic-msgs ros-jazzy-ament-cmake-gtest ros-jazzy-launch-ros ros-jazzy-rclpy ros-jazzy-ros2bag ros-jazzy-rosbag2-py ros-jazzy-rosbag2-transport ros-jazzy-rosbag2-storage-default-plugins ros-jazzy-sensor-msgs ros-jazzy-tf2-msgs
+      - name: Build interfaces and receive-only node without vendor SDK
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon build --base-paths src --packages-select a2_interfaces a2_platform a2_storage a2_mission a2_bringup --cmake-args -DA2_ENABLE_UNITREE_SDK=OFF -DBUILD_TESTING=ON
+      - name: Test state validation and mock source
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/local_setup.bash
+          colcon test --packages-select a2_platform --return-code-on-test-failure
+          colcon test-result --verbose
+      - name: Verify mock ROS state, diagnostics and query service
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/local_setup.bash
+          python3 scripts/readonly_smoke.py
+      - name: Verify hardware-free mission lifecycle and persistent restart
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/local_setup.bash
+          python3 scripts/mission_ros_smoke.py
+      - name: Test actual rosbag inspection and synthetic sensor capture
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          python3 -m unittest discover -s scripts/test -v
+          python3 scripts/capture_ros_smoke.py
+      # This workflow has no vendor SDK, robot credentials or hardware access.

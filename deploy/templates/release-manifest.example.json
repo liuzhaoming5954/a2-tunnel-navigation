@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "status": "template_not_deployable",
+  "release_id": null,
+  "source_commit": null,
+  "source_dirty": null,
+  "target": {
+    "robot_id": null,
+    "architecture": "aarch64",
+    "jetpack_l4t": null,
+    "ubuntu_version": null,
+    "ros_distribution": null
+  },
+  "dependencies_lock_sha256": null,
+  "build_environment_digest": null,
+  "artifacts": [],
+  "bundle_id": null,
+  "config_version": null,
+  "map_version": null,
+  "acceptance_evidence": [],
+  "approved_for_motion": false,
+  "previous_release_id": null,
+  "runtime_data_policy": "preserve_database_events_media_and_consumed_authorizations_on_rollback"
+}

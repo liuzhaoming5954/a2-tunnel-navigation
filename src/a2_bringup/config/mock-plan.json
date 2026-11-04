@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "simulated": true,
+  "bundle_id": "demo-bundle",
+  "route_id": "demo-route",
+  "map_version": "demo-map",
+  "config_version": "demo-config",
+  "visit_ids": ["demo-valve-01", "demo-valve-02"]
+}

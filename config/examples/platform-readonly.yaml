@@ -1,0 +1,8 @@
+# Synthetic source only. These values are test settings, not A2 acceptance limits.
+a2_platform_readonly:
+  ros__parameters:
+    source: mock
+    robot_id: mock-a2
+    publish_period_ms: 100
+    stale_timeout_ms: 500
+    mock_drop_after_s: -1.0

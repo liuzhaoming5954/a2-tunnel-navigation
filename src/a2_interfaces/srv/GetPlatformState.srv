@@ -1,0 +1,6 @@
+# Readonly query. No request fields, control authority or hardware side effects.
+---
+# True when a raw sample exists, even if that sample has become stale.
+# Inspect state.valid and per-field validity before using its values.
+bool available
+a2_interfaces/PlatformState state

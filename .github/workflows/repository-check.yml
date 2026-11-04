@@ -1,0 +1,41 @@
+name: repository-check
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repository-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout source
+        # actions/checkout v4, resolved from the upstream tag on 2026-11-04.
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Validate repository scaffolding
+        run: python3 scripts/check_repository.py
+      - name: Test capture and bag inspection contracts
+        run: python3 -m unittest discover -s scripts/test -v
+      - name: Test SQLite journal
+        env:
+          PYTHONPATH: src/a2_storage
+        run: python3 -m unittest discover -s src/a2_storage/test -v
+      - name: Test offline mission core
+        env:
+          PYTHONPATH: src/a2_storage:src/a2_mission
+        run: python3 -m unittest discover -s src/a2_mission/test -v
+      - name: Run synthetic mission demo
+        env:
+          PYTHONPATH: src/a2_storage:src/a2_mission
+        run: python3 -m a2_mission.demo
+      - name: Test mock bringup configuration
+        env:
+          PYTHONPATH: src/a2_bringup
+        run: python3 -m unittest discover -s src/a2_bringup/test -v
+      # These checks do not grant robot motion authorization.

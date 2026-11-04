@@ -1,0 +1,29 @@
+# Draft v0.2 mock-only mission command boundary. schema_version is currently 1.
+# This is not a hardware control or authenticated operator interface.
+uint16 schema_version
+string request_id
+# Allowed: prepare, authorize, start, pause, resume, cancel, clear_fault,
+# record_visit, inject_fault. The adapter rejects unsupported commands/fields.
+string command
+string mission_id
+string operator_id
+bool local_confirmation
+string authorization_id
+string bundle_id
+string route_id
+string map_version
+string config_version
+string visit_id
+string fault_reason
+---
+# True only when a core receipt was obtained, including core-level rejections.
+# A processed request may still have receipt.accepted=false.
+bool processed
+string error_code
+string error_message
+# Historical command result; never treat it as the current state.
+a2_interfaces/CommandReceipt receipt
+bool has_mission
+a2_interfaces/MissionStatus current
+# Returned directly for authorize only. Never publish this on status/receipt topics.
+string authorization_id
