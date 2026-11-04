@@ -17,6 +17,9 @@ README = """A2 原装传感器采集工具包
 仅包含 Python 源码，不包含 ROS、驱动、标定、现场数据或凭据。
 已在开发机 Jazzy/x86_64 验证；目标 A2 环境仍需核实。
 维护网络、SSH、传包与回传的完整步骤见 docs/a2-connection.md。
+公共仓库：https://github.com/liuzhaoming5954/a2-tunnel-navigation
+按手册从干净的固定提交生成工具包，配套传入 SOURCE_COMMIT.txt 和校验文件。
+A2 将版本记录保存到 config/local/SOURCE_COMMIT.txt，录包回传时一起保存。
 
 准备环境：Python 3.10+，A2 实际安装的 ROS 2、厂商驱动环境，
 rclpy、sensor_msgs、tf2_msgs、rosidl_runtime_py、rosbag2_py、

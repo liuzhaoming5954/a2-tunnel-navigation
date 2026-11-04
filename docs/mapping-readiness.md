@@ -86,8 +86,10 @@ mkdir -p artifacts
 python3 scripts/package_capture_tools.py --output artifacts/a2-capture-kit.zip
 ```
 
-归档固定包含两份采集/检查 Python 脚本、空话题配置示例、独立操作说明和 `SHA256SUMS`；不递归打包工作区，不包含源码仓库凭据、现场配置、录包或 x86_64 二进制。解压后进入 `a2-capture-kit`，执行 `sha256sum -c SHA256SUMS` 核对，再加载目标机实际 ROS/驱动环境。它不能替代 ROS 和厂商驱动的离线依赖准备。
+归档固定包含两份采集/检查 Python 脚本、空话题配置示例、独立操作说明、[连接手册](a2-connection.md)和 `SHA256SUMS`；不递归打包工作区，不包含源码仓库凭据、现场配置、录包或 x86_64 二进制。解压后进入 `a2-capture-kit`，执行 `sha256sum -c SHA256SUMS` 核对，再加载目标机实际 ROS/驱动环境。它不能替代 ROS 和厂商驱动的离线依赖准备。
 
 本轮产物位于忽略的 `artifacts/a2-capture-kit.zip`，已核对归档白名单、ZIP CRC 和逐文件 SHA-256。脚本更新后用新文件名重新生成，不复用旧包冒充新版本。
+
+现场最新材料按连接手册从公共仓库的干净固定提交生成，并配套 `SOURCE_COMMIT.txt` 与外层校验清单；保留旧包作为历史产物，不以旧包替代新版手册对应材料。A2 维护时可联网则可直接克隆相同 SHA，需完整历史且无外网时可传离线 bundle，三条路径使用相同的采集与回传目录。
 
 待现场可连接时，按采集指南取得短包和环境记录；根据真实字段/时序/外参完成适配与候选问题修正，再运行 DLIO→RTAB-Map 并保存、重载与评估地图。当前无需追加 SSH 信息，连接可用时再继续现场工作。

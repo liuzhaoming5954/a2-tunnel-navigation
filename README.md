@@ -12,7 +12,7 @@
 | [软件架构](docs/architecture.md) | 分层、包职责、接口、进程和项目目录 |
 | [本机开发与 A2 验证](docs/development.md) | 环境、模拟/回放、ARM64 构建、现场验证和证据回传 |
 | [GitHub 建库准备](docs/github-setup.md) | 建库配置、初始提交、CI、数据边界和发布安排 |
-| [连接 A2 操作流程](docs/a2-connection.md) | 维护网络、SSH 登录、工具传输、首次采集及数据回传 |
+| [连接 A2 操作流程](docs/a2-connection.md) | GitHub 固定版本、ZIP/在线克隆/离线 bundle、SSH、首次采集与数据回传 |
 | [实机录包与建图验证](docs/mapping-capture.md) | 核查原装传感器、采集真实数据并带回本机分析 |
 | [建图准备状态](docs/mapping-readiness.md) | 本机候选构建、无输入启动检查、适配要求及待验证项 |
 | [模拟任务演示](docs/mock-mission.md) | 一键启动 mock，任务服务、故障与持久恢复 |

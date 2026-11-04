@@ -83,42 +83,14 @@ fi
 
 ## 5. 向 A2 传递代码
 
-公共仓库读取源码可以使用 HTTPS，无需把开发者个人的 GitHub 写入凭据放到机器人上。本机提交并推送后，登记本轮待验证的完整 commit SHA；A2 在停稳的维护窗口获取该版本，不在运行目录中直接更新。
+完整可执行步骤统一维护在[连接 A2 操作流程](a2-connection.md)，包括实际维护网络、SSH、三种获取路径、源码版本核验、录制和数据回传。
 
-**A2 维护时能联网：** 在新的候选目录获取源码，然后切换到已确认的完整 SHA：
+| 条件 | 获取方式 |
+|---|---|
+| A2 无法访问 GitHub，只需采集工具 | 本机在干净的固定提交生成 ZIP，版本记录与校验清单一起经维护 SSH / 受控介质传入 |
+| A2 维护时能访问 GitHub | 用公共 HTTPS 地址克隆，切换到与本机登记一致的完整提交 |
+| A2 无法访问 GitHub，希望保留源码及所选版本历史 | 本机从固定 HEAD 导出 Git bundle，经维护 SSH / 受控介质传入并离线克隆 |
 
-```bash
-git clone --branch main --single-branch \
-  https://github.com/liuzhaoming5954/a2-tunnel-navigation.git \
-  a2-tunnel-navigation-candidate
-cd a2-tunnel-navigation-candidate
-read -r -p '本轮待验证的完整 commit SHA：' A2_SOURCE_SHA
-if [[ "$A2_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-  git switch --detach "$A2_SOURCE_SHA"
-  git rev-parse HEAD
-  git status --short
-else
-  printf '%s\n' '请填写已确认的完整 SHA，未切换版本。'
-fi
-```
+选择 `main` 上已推送且 CI 通过的完整 40 位 SHA，A2 获取后核对；不把浮动分支或 PR 临时 merge SHA 当作现场版本。ZIP 从该干净版本生成，外层校验同时覆盖 ZIP 与 `SOURCE_COMMIT.txt`。bundle 导出固定 `HEAD` 及祖先，避免所选旧版本与更新后的 `main` 混淆；不导出无关分支。
 
-确认实际 SHA 与登记值一致且工作区无修改后，按目标架构与 profile 的包白名单构建和验证。公开仓库只是源码获取渠道，未安装的 ROS、厂商驱动与第三方依赖仍须单独准备。不能将本机 x86_64 安装产物直接复制给 ARM64。
-
-**A2 维护时也不能联网：** 本机从 GitHub 获取并核对同一提交，用 `git bundle` 或候选源码包通过维护 SSH / 受控介质传入。下例用于正常 Git 工作区，`main` 须已提交并与本轮待验证版本核对；bundle 不包含未提交文件、忽略数据或第三方源码缓存。[Git bundle 官方说明](https://git-scm.com/docs/git-bundle)
-
-```bash
-git bundle create a2-source.bundle main
-sha256sum a2-source.bundle > a2-source.bundle.sha256
-```
-
-把两个文件一并带到 A2，在新的维护目录核验摘要，再克隆到新的候选目录：
-
-```bash
-sha256sum -c a2-source.bundle.sha256
-git clone --branch main a2-source.bundle a2-tunnel-navigation-candidate
-cd a2-tunnel-navigation-candidate
-git rev-parse HEAD
-git status --short
-```
-
-核验 SHA、补齐本地依赖并验证后，才进入后续部署步骤；运行期不访问 GitHub。维护连接与文件传输详见[连接 A2 流程](a2-connection.md)。
+三条路径在新维护目录汇合，版本记录保存在 `config/local/SOURCE_COMMIT.txt`，随录包会话回传。公共源码读取不需要在 A2 保存个人 GitHub 写入凭据。GitHub 只解决代码传递，ROS/驱动/第三方依赖和 ARM64 构建验证仍须单独准备；运行期间不访问 GitHub，不在活动运行目录自动更新。
