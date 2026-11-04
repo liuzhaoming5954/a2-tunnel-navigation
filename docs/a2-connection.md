@@ -25,7 +25,14 @@
 
 **维护地址、底盘 SDK 地址和雷达地址用途不同。** 设计资料中的雷达 IP、SDK 网段不能作为 Orin 的 SSH 地址。若登录目标实际为 PC2 或其他主机，先确认感知计算机的入口，再继续；不要把“能登录某台计算机”当作传感器接入已完成。
 
-已有离线包为 `artifacts/a2-capture-kit.zip`。包含本连接文档的新包为 `artifacts/a2-capture-kit-with-connection.zip`，本流程使用后者；包中只有源码工具、示例和说明，不包含 ROS、厂商驱动、现场标定或 ARM64 依赖。
+离线包属于本机生成物，不随公共源码仓库提交。**【本机】** 从 GitHub 克隆源码后，先进入项目根目录生成包含本流程的工具包：
+
+```bash
+mkdir -p artifacts
+python3 scripts/package_capture_tools.py --output artifacts/a2-capture-kit-with-connection.zip
+```
+
+工具不会覆盖已有 ZIP；已有包且需要更新时使用新文件名，并对应替换下文传输文件名。本流程使用 `artifacts/a2-capture-kit-with-connection.zip`，包含源码工具、示例和说明，不包含 ROS、厂商驱动、现场标定或 ARM64 依赖。
 
 ## 2. 接入维护网络
 
