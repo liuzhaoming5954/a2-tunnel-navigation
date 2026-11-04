@@ -329,6 +329,8 @@ python3 scripts/a2_capture.py inventory \
   --output data/captures/a2-sensor-check.json
 ```
 
+若已确认驱动正在输出，但首次发现较慢，可为核查或录制命令加 `--discovery-seconds 8 --sample-seconds 3`，重新输出到新的报告文件；这只是发现/采样等待预算，不是数据健康或同步合格阈值。仍然无数据时按第 9 节检查主机、驱动与 ROS 通信配置，不改用 mock 绕过。
+
 先排查核心话题缺失、类型不符和无数据等错误。TF、frame 或每点时间未决项需要记录；允许先保留原始数据，但不能据此判断可建图。确认磁盘容量后录制 60 秒静止短包：
 
 ```bash
