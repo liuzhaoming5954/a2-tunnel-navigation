@@ -2,7 +2,7 @@
 
 面向 A2-PRO / Jetson Orin 的定位导航与巡检项目。运行期间无外部网络，由机载系统完成固定路线巡检、载荷采集、故障处置和返桩对准，恢复联网后同步成果。
 
-**当前阶段：准备实机采集工具与本机建图环境。** 用户已确认原装雷达、IMU 和摄像头可用，尚未安装的是新增巡检载荷。目前无法连接 A2，也没有实机录包，原装数据的话题、时钟和标定仍待核查。本机 Jazzy/x86_64 已完成固定版本 DLIO 候选构建及 DLIO/RTAB-Map 无输入启动检查；数据适配、完整建图和 A2/Humble 验证仍待。任务/存储核心、公共 ROS 接口、平台模拟状态和 mock 启动组合已实现；五个包为 in_progress，其他七个为 planned，模拟检查不作为实机验收证据。
+**当前阶段：开展维护连接、软件验证与原装传感器接入准备。** 原装雷达、IMU 和摄像头是当前接入对象，新增巡检载荷后置。现场结果保存在私有记录中；当前尚无真实录包或完整建图结果，M0 未关闭。公开候选构建与无输入启动检查不代表真实数据链、硬件 SDK、导航或建图验收。任务/存储核心、公共 ROS 接口、平台模拟状态和 mock 启动组合已实现；五个包为 in_progress，其他七个为 planned。
 
 ## 文档入口
 
@@ -13,13 +13,14 @@
 | [本机开发与 A2 验证](docs/development.md) | 环境、模拟/回放、ARM64 构建、现场验证和证据回传 |
 | [GitHub 建库准备](docs/github-setup.md) | 建库配置、初始提交、CI、数据边界和发布安排 |
 | [连接 A2 操作流程](docs/a2-connection.md) | GitHub 固定版本、ZIP/在线克隆/离线 bundle、SSH、首次采集与数据回传 |
+| [原装传感器接口](docs/a2-sensor-interfaces.md) | 官方 PC2 服务、DDS/ROS 通信及雷达、IMU、相机接入规则 |
 | [实机录包与建图验证](docs/mapping-capture.md) | 核查原装传感器、采集真实数据并带回本机分析 |
 | [建图准备状态](docs/mapping-readiness.md) | 本机候选构建、无输入启动检查、适配要求及待验证项 |
 | [模拟任务演示](docs/mock-mission.md) | 一键启动 mock，任务服务、故障与持久恢复 |
 | [ROS 只读演示](docs/platform-readonly.md) | 构建节点、观察状态/诊断、查询与模拟断流 |
 | [依赖管理](third_party/README.md) | 候选第三方组件与版本锁定要求 |
 
-本机为 x86_64 Ubuntu 24.04，已安装 ROS 2 Jazzy（需 source），具备 Python 3、colcon、CMake 和 C++ 编译器。Humble/Jammy 容器是与候选 A2 环境对齐的开发方案；最终发行版须经 M0 核实。当前未执行容器构建或 A2 实机测试。
+开发环境以 x86_64 Ubuntu 24.04 / ROS 2 Jazzy 和 Python 3、colcon、CMake、C++ 工具链为基线；Humble/Jammy 容器用于候选目标兼容验证。目标机器人采用的实际环境和验证结果登记在私有记录中，公开候选基线不替代 M0 依赖锁定或验收。
 
 ## 当前可执行的检查与演示
 
@@ -46,6 +47,6 @@ PYTHONPATH=src/a2_storage:src/a2_mission python3 -m a2_mission.demo
 
 ## 下一步实现顺序
 
-A2 当前无法连接，先继续完成本机候选依赖、输入适配核查和采集工具准备，记录在[建图准备状态](docs/mapping-readiness.md)。DLIO 固定版本已在本机 Jazzy/x86_64 构建成功，使用时需显式加载候选 overlay；实机数据与完整建图尚未验证。可连接 A2 后，按[录包指南](docs/mapping-capture.md)核查系统、ROS、原装传感器话题、时钟和外参，完成短包与路线采集，再验证 DLIO 与 RTAB-Map。新增巡检载荷接入后移；M0 仍未关闭，实际控制继续遵守正式准入条件。
+维护连接和软件验证已开展，现场结论保存在私有记录中。继续按[原装接口](docs/a2-sensor-interfaces.md)与[录包指南](docs/mapping-capture.md)核查目标环境、数据通道、时钟和外参，准备短包与路线采集，再隔离回放验证 DLIO 与 RTAB-Map，进度见[建图准备状态](docs/mapping-readiness.md)。当前没有真实录包或完整建图；新增巡检载荷接入后移，M0 仍未关闭，实际控制继续遵守正式准入条件。
 
 源码仓库：[liuzhaoming5954/a2-tunnel-navigation](https://github.com/liuzhaoming5954/a2-tunnel-navigation)，可见性为 **public**，默认分支 `main`。尚未选定开源许可证。日常在本机开发并提交，A2 在维护阶段获取固定提交，运行时不访问 GitHub；现场数据、凭据和平台构建产物不进入源码仓库。
