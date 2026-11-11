@@ -15,15 +15,15 @@
 
 Humble 官方二进制目标包含 Ubuntu 22.04 的 amd64/arm64。本机宿主是 24.04，故候选方案使用容器，不直接混装 Jammy 软件源。若 M0 确认 A2 采用其他受支持组合，则同步调整本机镜像、CI 和依赖锁定；不能把本机 Jazzy 构建成功作为 Humble 已验证。[ROS 官方安装文档源码](https://github.com/ros2/ros2_documentation/blob/humble/source/Installation/Ubuntu-Install-Debs.rst)
 
-当前 `a2_mission`、`a2_storage` 为 `in_progress`，已实现纯 Python 核心与测试；公共接口与平台只读包也已进入 `in_progress`，bringup mock 组合也已进入 `in_progress`，其他 7 个包仍为 `planned`。已实现范围见[实现进度](implementation-status.md)。正式 `third_party/dependencies.repos` 仍为空，待 M0 核实后登记；本机试验版本单独锁定在[建图候选清单](../third_party/mapping-candidate.repos)。不存在可构建 ROS 包时，`colcon` 执行成功或发现零个包，均不能记作编译/测试通过。
+任务、存储、公共接口、平台和 bringup 已有五个可构建 ROS 2 包。导航目录新增了独立的离线规划工具，实机执行包待实现。正式依赖待 M0 核实后登记，本机试验依赖单独记录。[实现进度](implementation-status.md) · [建图候选清单](../third_party/mapping-candidate.repos)
 
-本机已完成官方 DLIO `feature/ros2` 提交 `c8acc37100e349d70a9d8432d656cbce7e5072cd` 的 Jazzy/x86_64 候选构建，源码位于 `third_party/src/direct_lidar_inertial_odometry`，无本地修改和子模块。本轮候选 overlay 位于 `/tmp/a2-dlio-candidate-install`，需先加载 `/opt/ros/jazzy/setup.bash`，再显式加载该目录的 `local_setup.bash`；系统 underlay 仍不提供 DLIO。`/tmp` 是本机临时构建位置，不能当作 A2 发布路径。详细记录见[建图准备状态](mapping-readiness.md)；实际数据适配、完整建图及 A2/Humble 验证仍待。
+本机已完成官方 DLIO `feature/ros2` 固定提交的 Jazzy/x86_64 基线构建。真实数据回放使用单独构建的试验 overlay，启动时记录源码补丁、参数、回放方式和输出位置。A2 的正式建图依赖与 ARM64 构建待验证。[候选版本与重建](mapping-readiness.md) · [最新回放结果](implementation-status.md)
 
-DLIO/RTAB-Map 已通过本机回环网络上的无输入启动检查，确认进程存活、隔离输入订阅与 `use_sim_time=true`。该检查没有 bag 输入；源码中点云/里程计的时间与坐标、TF 发布、QoS 和去畸变退化行为仍需适配验证，不能据此报告 SLAM 数据通路通过。
+建图验证使用本机回环网络和独立 ROS 域。从无输入启动检查推进到实机录包回放，已验证前雷达与配套 IMU 的点时间、同步点云和位姿、整圈建图与候选闭环。地图尺度、重定位和机载负载按对应阶段继续核验。[开发进度说明](implementation-status.md)
 
 ## 2. 每次变更的开发闭环
 
-维护连接、软件验证和原装传感器接入核查已开展，现场结果保存于私有记录。按[官方接口说明](a2-sensor-interfaces.md)核查目标环境、消息、时间基准和外参，再按[实机录包与建图验证](mapping-capture.md)准备短包与路线采集，在隔离环境回放验证 DLIO 和 RTAB-Map。当前没有真实录包或完整建图；新增巡检载荷接入后移，已完成的 [mock 任务演示](mock-mission.md)保留为软件回归，M0 实机准入条件仍须逐项验证。
+新 A2 的前雷达和配套 IMU 已完成断网整圈录包与本机闭环复测，现场原始数据保存在受控目录。地图几何、尺度与重定位进入下一轮核验。M0 实机控制权与停车待验证，新增巡检载荷按安装进度接入。[录包指南](mapping-capture.md) · [首次受控运动与停车验证](a2-first-motion-test.md)
 
 1. 从 `main` 建立短期功能分支，明确修改影响的模块、接口、配置和验收用例。
 2. 在本机完成实现与对应测试，运行仓库检查；使用 mock 或固定数据回放复现故障。控制策略测试覆盖真实状态转换、超时、取消和恢复，不只检查消息能够发布。
@@ -63,7 +63,7 @@ docker run --rm -it --network none \
 ```bash
 source /opt/ros/humble/setup.bash
 colcon list --base-paths src --packages-select a2_interfaces a2_platform a2_storage a2_mission a2_bringup
-# 确认实际发现五个包；其他 planned 目录尚无 package.xml。
+# 确认实际发现的 ROS 2 包，离线规划工具独立运行。
 colcon build --base-paths src --packages-select a2_interfaces a2_platform a2_storage a2_mission a2_bringup --symlink-install \
   --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo
 colcon test --base-paths src --packages-select a2_interfaces a2_platform a2_storage a2_mission a2_bringup --event-handlers console_direct+

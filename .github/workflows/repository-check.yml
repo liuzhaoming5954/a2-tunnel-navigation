@@ -38,4 +38,8 @@ jobs:
         env:
           PYTHONPATH: src/a2_bringup
         run: python3 -m unittest discover -s src/a2_bringup/test -v
+      - name: Test offline map goal planning
+        env:
+          PYTHONPATH: src/a2_navigation
+        run: python3 -m unittest discover -s src/a2_navigation/test -v
       # These checks do not grant robot motion authorization.

@@ -2,7 +2,7 @@
 
 **架构基线 v0.5 · 2026-11-04**
 
-本文确定代码组织、模块边界和启动模式；业务与验收要求见 [完整设计方案](design/A2-PRO_Utility_Tunnel_Navigation_v0.5.md)，开发操作见 [开发与实机验证流程](development.md)。当前仓库处于设计与骨架阶段：12 个自研包中，任务、存储、公共接口、平台与 bringup 包为 `in_progress`，已实现纯 Python 核心、ROS 只读链路与 mock 任务服务；其他 7 个包为 `planned`。当前能力与验证见[实现进度](implementation-status.md)，尚无可控制 A2 的节点。
+本文确定代码组织、模块边界和启动模式。业务与验收要求见[完整设计方案](design/A2-PRO_Utility_Tunnel_Navigation_v0.5.md)，开发操作见[开发与实机验证流程](development.md)。当前已有任务与存储核心、ROS 只读链路、mock 任务服务和离线地图目标点规划。实机运动节点待实现。[实现进度](implementation-status.md)记录软件与实机验证范围。
 
 包计划以 [`src/package-plan.json`](../src/package-plan.json) 登记，模式契约以 [`config/examples/profiles.json`](../config/examples/profiles.json) 登记；后者区分已实现的 mock 组合与仍在设计的其他 profile；mock 运行见[任务演示](mock-mission.md)，单独节点见[只读演示](platform-readonly.md)。
 
@@ -142,10 +142,10 @@ A2_project/
 
 ## 6. 实施顺序与当前边界
 
-用户已确认 A2 原装雷达、IMU 和摄像头可用，尚未安装的是新增巡检载荷。目前无法连接机器人，未取得实机录包或建图结果；本机继续推进候选依赖、数据适配核查和采集工具准备，DLIO 固定版本已完成 Jazzy/x86_64 候选构建。mock 系统启动器已可运行，其他 profile 与真实安全控制继续保留为后续工作，模拟输入不作为实机通过依据。
+A2 已完成维护连接和原装前雷达、IMU 的断网采集。本机已隔离回放实机环线录包并生成地图及闭环候选。原装摄像头可用，新增巡检载荷尚未安装。mock 启动组合已实现，实机安全控制与其他正式 profile 待实现，M0 未关闭。[实现进度](implementation-status.md)
 
-1. 保留已实现的任务/存储核心与 mock 闭环，无法连接 A2 时继续独立本机准备。可连接后按[录包指南](mapping-capture.md)核查 A2 系统、原装传感器话题、点内时间、IMU、外参、TF 和 QoS，先完成短包再采集代表性路线。采集工具只读观察，运动采集由现场人员使用原厂方式受控操作。
-2. 根据实测输入核实数据适配和候选依赖，在本机隔离回放，先验证 DLIO 里程计、去畸变与 RTAB-Map 建图，再验证定位、健康状态及固定路线进度。本机 DLIO 候选须显式加载 `/tmp/a2-dlio-candidate-install` overlay，系统 underlay 仍不提供 DLIO；候选构建与 DLIO/RTAB-Map 无输入启动检查已通过，真实数据通路、时间/坐标/TF/QoS 适配和完整建图仍待验证。
+1. 保留已实现的任务/存储核心与 mock 闭环。更换机器人或配置时，按[录包指南](mapping-capture.md)核查 A2 系统、原装传感器话题、点内时间、IMU、外参、TF 和 QoS，先用短包确认数据，再采集代表性路线。采集工具只读观察，运动采集由现场人员使用原厂方式受控操作。
+2. 根据实测输入核实数据适配和候选依赖，在本机加载对应候选 overlay 并隔离回放。继续验证场地覆盖、地图几何和重定位，再联调定位健康与固定路线进度。[建图准备与回放边界](mapping-readiness.md)
 3. 取得底盘失效停车证据后实现并验证仲裁、防撞、桥接的唯一运动链路，再开放受限运动 profile。
 4. 新增云台、气体等巡检载荷安装后再接入，按完整方案 M0–M4 逐步集成载荷、返桩与离线全程；其缺席不阻塞原装传感器建图验证，不以本机 CI 或 ARM64 编译成功代替实机验收。
 

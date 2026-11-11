@@ -1,6 +1,6 @@
 # 连接 A2 并完成首次数据采集
 
-适用：开发机为 Ubuntu，通过已确认的维护有线网或维护 Wi-Fi 登录目标开发单元或感知计算机，检查原装雷达、IMU、摄像头并采集数据。已接入[公共 GitHub 仓库](https://github.com/liuzhaoming5954/a2-tunnel-navigation)的代码传递流程。**维护连接、软件验证与接口核查已开展，现场环境和结果保存在私有记录中；当前尚无真实录包或完整建图，M0 未关闭。** 后续访问按私有记录核对维护口、地址、账号、SSH 端口及实际 ROS 环境，不将本文示例作为实机配置。
+本手册适用于从 Ubuntu 开发机通过维护有线网或维护 Wi-Fi 登录 A2，传递代码、核查原装传感器和回传数据。已在实机完成维护连接、固定源码校验和原装前雷达、IMU 的断网采集。环线录包已在本机隔离回放，现场环境和结果保存在私有记录中。M0 未关闭，实机运动模式尚未放行。后续访问按私有记录核对维护口、地址、账号、SSH 端口及实际 ROS 环境，示例配置按现场实测值填写。[公共 GitHub 仓库](https://github.com/liuzhaoming5954/a2-tunnel-navigation) · [实现进度](implementation-status.md)
 
 原厂服务、DDS/ROS 中间件和传感器数据语义见[官方接口核对](https://github.com/liuzhaoming5954/a2-tunnel-navigation/blob/main/docs/a2-sensor-interfaces.md)。该链接指向公共通用说明，不包含现场配置或接入结果；离线采集所需配置应在维护期核实并保存于本地。
 

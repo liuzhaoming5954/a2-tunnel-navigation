@@ -33,8 +33,8 @@
     {
       "name": "a2_navigation",
       "path": "src/a2_navigation",
-      "status": "planned",
-      "implementation": "C++17",
+      "status": "in_progress",
+      "implementation": "Python 3 离线规划工具，C++17 现场执行待实现",
       "responsibility": "固定路线执行、路线进度和桩前对准"
     },
     {
