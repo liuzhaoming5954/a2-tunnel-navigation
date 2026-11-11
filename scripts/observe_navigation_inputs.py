@@ -85,9 +85,15 @@ def observe(args, node):
     node.create_subscription(OccupancyGrid, args.map_topic, read_map, map_qos)
     node.create_subscription(Odometry, args.odom_topic, read_odometry,
                              QoSProfile(depth=32, reliability=ReliabilityPolicy.BEST_EFFORT))
-    began = time.monotonic()
-    deadline = began + args.duration_s
+    started = time.monotonic()
     try:
+        startup_deadline = started + args.startup_timeout_s
+        while rclpy.ok() and time.monotonic() < startup_deadline:
+            if map_info is not None and counters["odometry_messages"]:
+                break
+            rclpy.spin_once(node, timeout_sec=min(0.04, max(0.0, startup_deadline - time.monotonic())))
+        began = time.monotonic()
+        deadline = began + args.duration_s
         while rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(node, timeout_sec=min(0.04, max(0.0, deadline - time.monotonic())))
             now_ns = node.get_clock().now().nanoseconds
@@ -130,7 +136,8 @@ def observe(args, node):
         "passed": all(checks.values()), "map_topic": args.map_topic, "odom_topic": args.odom_topic,
         "frames": [args.map_frame, args.odom_frame, args.base_frame],
         "use_sim_time": node.get_parameter("use_sim_time").value,
-        "duration_s": time.monotonic() - began, "max_pose_age_s": args.max_pose_age_s,
+        "startup_wait_s": began - started, "duration_s": time.monotonic() - began,
+        "max_pose_age_s": args.max_pose_age_s,
         "minimum_pose_samples": args.min_pose_samples, "counts": dict(counters),
         "map": map_info, "latest_matching_pose": last_matching, "latest_pose_age_s": latest_age / 1e9
         if latest_age is not None else None, "latest_tf_error": latest_tf_error,
@@ -149,15 +156,18 @@ def main():
     parser.add_argument("--base-frame", default="base_footprint")
     parser.add_argument("--map-durability", choices=("transient-local", "volatile"), default="transient-local")
     parser.add_argument("--map-reliability", choices=("reliable", "best-effort"), default="reliable")
+    parser.add_argument("--startup-timeout-s", type=float, default=6.0,
+                        help="Wait for the first map and odometry before timing the observation window")
     parser.add_argument("--duration-s", type=float, default=8.0)
     parser.add_argument("--max-pose-age-s", type=float, required=True)
     parser.add_argument("--min-pose-samples", type=int, default=3)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(remove_ros_args(sys.argv)[1:])
     if (not math.isfinite(args.duration_s) or not 0 < args.duration_s <= 60
+            or not math.isfinite(args.startup_timeout_s) or not 0 <= args.startup_timeout_s <= 60
             or not math.isfinite(args.max_pose_age_s) or not 1e-9 <= args.max_pose_age_s <= args.duration_s
             or args.min_pose_samples <= 0):
-        parser.error("Choose a positive duration up to 60 s, a positive maximum age within it and a sample count")
+        parser.error("Choose a sampling duration and startup timeout up to 60 s, a positive maximum age and a sample count")
     frames = (args.map_frame, args.odom_frame, args.base_frame)
     if len(set(frames)) != 3 or any(not frame or frame.startswith("/") for frame in frames):
         parser.error("Map, odometry and base frames must be distinct nonempty TF names without a leading slash")

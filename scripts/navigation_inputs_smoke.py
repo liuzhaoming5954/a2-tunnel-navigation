@@ -36,13 +36,22 @@ def run_case(node, output, name, map_transform=True, lag_s=0.10):
     path = Path(__file__).with_name("observe_navigation_inputs.py")
     command = [sys.executable, str(path), "--map-topic", map_topic, "--odom-topic", odom_topic,
                "--map-frame", map_frame, "--odom-frame", odom_frame, "--base-frame", base_frame,
-               "--duration-s", "3", "--max-pose-age-s", "0.50", "--output", str(output)]
+               "--startup-timeout-s", "10", "--duration-s", "3", "--max-pose-age-s", "0.50",
+               "--output", str(output)]
     with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as process:
-        deadline = time.monotonic() + 12.0
+        began = time.monotonic()
+        deadline = began + 20.0
+        # Make the first odometry arrive after the nominal sampling window in
+        # one case, so discovery delay cannot accidentally pass the guard.
+        odometry_start = began + (4.0 if name == "missing_tf" else 0.0)
         while process.poll() is None:
-            if time.monotonic() > deadline:
+            now = time.monotonic()
+            if now > deadline:
                 process.kill()
                 raise RuntimeError("Read-only navigation probe exceeded the test budget")
+            if now < odometry_start:
+                time.sleep(0.06)
+                continue
             stamp = (node.get_clock().now() - Duration(seconds=lag_s)).to_msg()
             transforms = []
             edges = [(odom_frame, base_frame, 0.4)]
@@ -70,6 +79,8 @@ def run_case(node, output, name, map_transform=True, lag_s=0.10):
     result = json.loads(output.read_text())
     if not result["checks"]["valid_occupancy_grid"] or result["counts"].get("odometry_messages", 0) < 3:
         raise RuntimeError(f"Missing synthetic inputs for {name}: {result}")
+    if name == "missing_tf" and result["startup_wait_s"] < 1.0:
+        raise RuntimeError(f"Expected delayed input before sampling: {result}")
     if name == "healthy":
         if not result["passed"] or abs(result["latest_matching_pose"]["position_m"][0] - 1.2) > 1e-6:
             raise RuntimeError(f"Expected map pose at x=1.2 m: {result}")

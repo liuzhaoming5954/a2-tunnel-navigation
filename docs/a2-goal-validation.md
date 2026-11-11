@@ -40,7 +40,7 @@ python3 scripts/observe_navigation_inputs.py \
   --max-pose-age-s "$A2_POSE_AGE_LIMIT_S" --output "$A2_INPUT_REPORT"
 ```
 
-观察工具输出地图元数据、同时间 TF 配对数、最近位姿年龄和失败原因。定位可信度由定位节点与独立现场观测确认。可用 `--map-durability volatile` 或 `--map-reliability best-effort` 匹配实际发布者配置。ROS 2 Jazzy 合成测试已覆盖正常链路、缺失 TF 和里程计过期。目标机运行和实机坐标关系待核实。
+观察工具输出地图元数据、同时间 TF 配对数、最近位姿年龄和失败原因。启动等待与正式采样分别计时，`--startup-timeout-s` 设置首批地图和里程计的等待上限。定位可信度由定位节点与独立现场观测确认。可用 `--map-durability volatile` 或 `--map-reliability best-effort` 匹配实际发布者配置。ROS 2 Jazzy 合成测试已覆盖正常链路、缺失 TF 和里程计过期。目标机运行和实机坐标关系待核实。
 
 ## 3. 首次实机目标点试验
 
