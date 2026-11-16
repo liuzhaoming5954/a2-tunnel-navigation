@@ -22,24 +22,24 @@
 
 ## 各模块代码入口
 
-路径相对于当前工作区。「本地联调」标注的入口依赖尚未提交的实现。ROS 2 命令在构建并加载工作区后运行。模块清单见 [src/package-plan.json](src/package-plan.json)。
+路径相对于当前工作区。ROS 2 命令在构建并加载工作区后运行。模块清单见 [src/package-plan.json](src/package-plan.json)。
 
 | 模块 | 启动入口与主要源码 |
 | --- | --- |
 | `a2_interfaces` 公共接口 | [msg](src/a2_interfaces/msg/) 和 [srv](src/a2_interfaces/srv/) 定义消息和服务，[CMakeLists.txt](src/a2_interfaces/CMakeLists.txt) 注册接口。 |
 | `a2_description` 机身模型与外参 | [模块说明](src/a2_description/README.md)，URDF/Xacro 和静态 TF 配置待实现。 |
 | `a2_platform` 平台状态 | `ros2 run a2_platform readonly_node` → [readonly_node.cpp](src/a2_platform/src/readonly_node.cpp)，Unitree 状态适配见 [unitree_state_source.cpp](src/a2_platform/src/unitree_state_source.cpp)。 |
-| `a2_localization` 定位 | 本地联调使用 `src/a2_localization/a2_localization/body_pose.py` 换算机身位姿，`scripts/publish_a2_localization.py` 接入 DLIO 只读定位。 |
-| `a2_navigation` 导航 | [plan_navigation_goal.py](scripts/plan_navigation_goal.py) → [offline_planner.py](src/a2_navigation/a2_navigation/offline_planner.py) 做离线规划。本地联调使用 `scripts/preview_navigation_goal.py` → `src/a2_navigation/a2_navigation/straight_preview.py` 做指令预演。 |
-| `a2_safety` 安全 | 本地联调使用 `src/a2_safety/maintenance_arbiter.py` 的 `MaintenanceArbiter` 原型，实机仲裁服务待集成。 |
+| `a2_localization` 定位 | [body_pose.py](src/a2_localization/a2_localization/body_pose.py) 换算机身位姿，[publish_a2_localization.py](scripts/publish_a2_localization.py) 接入 DLIO 只读定位。 |
+| `a2_navigation` 导航 | [plan_navigation_goal.py](scripts/plan_navigation_goal.py) → [offline_planner.py](src/a2_navigation/a2_navigation/offline_planner.py) 做离线规划，[preview_navigation_goal.py](scripts/preview_navigation_goal.py) → [straight_preview.py](src/a2_navigation/a2_navigation/straight_preview.py) 做指令预演。 |
+| `a2_safety` 安全 | [maintenance_arbiter.py](src/a2_safety/maintenance_arbiter.py) 的 `MaintenanceArbiter` 为原型，实机仲裁服务待集成。 |
 | `a2_mission` 任务 | `ros2 run a2_mission mission_node` → [ros_node.py](src/a2_mission/a2_mission/ros_node.py) 启动 mock 节点，[controller.py](src/a2_mission/a2_mission/controller.py) 是任务控制器，[demo.py](src/a2_mission/a2_mission/demo.py) 是 `a2-mission-demo` 的入口。 |
 | `a2_payloads` 巡检载荷 | [模块说明](src/a2_payloads/README.md)，云台和气体传感器接入待实现。 |
 | `a2_storage` 存储 | [journal.py](src/a2_storage/a2_storage/journal.py) 的 `SQLiteJournal` 是 SQLite 持久化入口，由任务模块调用。 |
-| `a2_gateway` 维护上位机 | 本地联调使用 `scripts/run_a2_console.py` → `src/a2_gateway/a2_gateway/server.py`。Vue 前端从 `src/a2_gateway/web/src/main.js` 进入同目录的 `App.vue`。`scripts/start_a2_console_readonly.sh` 启动地图、平台状态和只读界面。 |
+| `a2_gateway` 维护上位机 | [run_a2_console.py](scripts/run_a2_console.py) → [server.py](src/a2_gateway/a2_gateway/server.py)。Vue 前端从 [main.js](src/a2_gateway/web/src/main.js) 进入 [App.vue](src/a2_gateway/web/src/App.vue)。[start_a2_console_readonly.sh](scripts/start_a2_console_readonly.sh) 启动地图、平台状态和只读界面，详见[操作说明](docs/a2-operator-console.md)。 |
 | `a2_bringup` 系统启动 | `ros2 launch a2_bringup mock.launch.py` → [mock.launch.py](src/a2_bringup/launch/mock.launch.py)。运行模式约定见 [profiles.json](config/examples/profiles.json)。 |
 | `a2_test_support` 测试支持 | [模块说明](src/a2_test_support/README.md)。独立包待实现，现有任务和平台验证入口为 [mission_ros_smoke.py](scripts/mission_ros_smoke.py) 和 [readonly_smoke.py](scripts/readonly_smoke.py)。 |
 
-- 录包和地图工具从 [a2_capture.py](scripts/a2_capture.py) 采集，[inspect_mapping_bag.py](scripts/inspect_mapping_bag.py) 检查录包，[export_navigation_map.py](scripts/export_navigation_map.py) 导出导航地图。本地联调使用 `scripts/record_a2_anchor_evidence.py` 记录定位匹配证据。
+- 录包和地图工具从 [a2_capture.py](scripts/a2_capture.py) 采集，[inspect_mapping_bag.py](scripts/inspect_mapping_bag.py) 检查录包，[export_navigation_map.py](scripts/export_navigation_map.py) 导出导航地图，[record_a2_anchor_evidence.py](scripts/record_a2_anchor_evidence.py) 记录定位匹配证据。
 - 导入 ODIN1 厂商源码后，ROS 驱动入口为 `third_party/src/odin_ros_driver/src/host_sdk_sample.cpp`，配置为 `third_party/src/odin_ros_driver/config/control_command.yaml`。直接调用 SDK 时查阅同一源码目录的 `include/lidar_api.h`。第三方源码布局见 [third_party/README.md](third_party/README.md)。
 
 ## 本机检查
