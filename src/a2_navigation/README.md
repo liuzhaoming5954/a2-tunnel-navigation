@@ -1,6 +1,6 @@
 # a2_navigation
 
-当前提供本机离线目标点规划工具。实机固定路线执行、路线进度和桩前对准由后续导航节点负责。
+当前提供本机离线目标点规划和直线指令预演。实机固定路线执行、路线进度和桩前对准由后续导航节点负责。
 
 ## 离线规划
 
@@ -21,3 +21,16 @@ python3 scripts/plan_navigation_goal.py \
 ```bash
 PYTHONPATH=src/a2_navigation python3 -m unittest discover -s src/a2_navigation/test -v
 ```
+
+## 本机指令预演
+
+`preview_navigation_goal.py` 读取直线路径、地图导出清单和指定的雷达到机身外参。外参 JSON 提供 `T_base_from_lidar` 4×4 矩阵及 `source`。脚本校验路线和地图来源一致，保留采样时间，按机身在地图上的平面位置和朝向计算前向速度、转向速度及停车原因。预演报告只写入 JSON。
+
+```bash
+python3 scripts/preview_navigation_goal.py \
+  --plan path/to/goal-plan.json --map-manifest path/to/manifest.json \
+  --extrinsics path/to/base-from-lidar.json --simulate \
+  --output path/to/new-preview.json
+```
+
+`--simulate` 运行到点与位姿断流两个场景。使用 `--anchor-report path/to/anchor-report.json` 时，按保存的机载匹配报告中的原始位姿和时刻回放。到点或故障后，该次预演保持零速。默认速度和容差是本机测试参数，实机参数待验证。正式路线执行采用项目设计的 Nav2，实机试验见[目标点验证流程](../../docs/a2-goal-validation.md)。
