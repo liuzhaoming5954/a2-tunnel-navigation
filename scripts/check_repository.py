@@ -106,7 +106,9 @@ def main() -> int:
 
     markdown = [ROOT / "README.md", ROOT / "third_party" / "README.md"]
     for directory in ("docs", "src", "tests", ".github"):
-        markdown.extend((ROOT / directory).rglob("*.md"))
+        source = ROOT / directory
+        markdown.extend(path for path in source.rglob("*.md")
+                        if not {"node_modules", "dist"}.intersection(path.relative_to(source).parts))
     for path in sorted(set(markdown)):
         if not path.is_file():
             continue
