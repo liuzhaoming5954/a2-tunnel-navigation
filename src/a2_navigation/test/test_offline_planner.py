@@ -1,12 +1,13 @@
 import json
 import math
+from array import array
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from a2_navigation.offline_planner import load_map, plan, read_pgm, search
+from a2_navigation.offline_planner import load_map, load_trinary_grid, plan, read_pgm, search
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -50,6 +51,13 @@ class OfflinePlannerTest(unittest.TestCase):
         self.assertEqual(read_pgm(b"P2\n# map\n3 1 255\n10 32 # cell\n35"), (3, 1, 255, raster))
         with self.assertRaisesRegex(ValueError, "raster"):
             read_pgm(b"P5\n3 1\n255\n" + raster[:2])
+
+    def test_trinary_grid_signed_values_bottom_row_first_and_threshold_equality(self):
+        path = self.write_map(3, 2, {(0, 0): 0, (1, 0): 51, (2, 0): 204,
+                                     (0, 1): 255, (1, 1): 50, (2, 1): 205},
+                              negate=1, free_thresh=0.2, occupied_thresh=0.8)
+        self.assertEqual(list(array("b", load_trinary_grid(path).cells)), [0, -1, -1, 100, 0, 100])
+        self.assertEqual(load_map(path).known_free, (0b001, 0b010))
 
     def test_wall_detour_and_exact_requested_endpoints(self):
         wall = {(5, y): 0 for y in range(8)}

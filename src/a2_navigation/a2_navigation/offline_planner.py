@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 MAX_CELLS = 4_000_000
+UNKNOWN_CELL = 255  # The byte representation of -1 in ROS int8[] data.
 PGM_WHITESPACE = b" \t\n\r\v\f"
 DIAGONAL_COST = math.sqrt(2.0)
 NEIGHBORS = (
@@ -130,7 +131,19 @@ class OccupancyMap:
                 y + sine * local_x + cosine * local_y)
 
 
-def load_map(path: Path) -> OccupancyMap:
+@dataclass(frozen=True)
+class TrinaryGrid:
+    width: int
+    height: int
+    resolution: float
+    origin: tuple[float, float, float]
+    cells: bytes
+    metadata_sha256: str
+    image_sha256: str
+
+
+def load_trinary_grid(path: Path) -> TrinaryGrid:
+    """Read an occupancy raster in ROS row-major order, with the lowest row first."""
     metadata_bytes = path.read_bytes()
     metadata = load_metadata(metadata_bytes.decode("utf-8"))
     image = metadata.get("image")
@@ -155,20 +168,37 @@ def load_map(path: Path) -> OccupancyMap:
     width, height, maximum, pixels = read_pgm(image_bytes)
     if not math.isfinite(math.hypot(*origin[:2]) + resolution * (width + height)):
         raise ValueError("Map coordinate extent must be finite")
-    shades = [pixel / maximum for pixel in range(maximum + 1)]
-    occupancy = shades if negate else [1.0 - shade for shade in shades]
-    # PGM's first row is the upper edge. Planner row zero is the map origin side.
+    classification = bytearray(256)
+    for pixel in range(maximum + 1):
+        shade = pixel / maximum
+        occupancy = shade if negate else 1.0 - shade
+        if occupancy < free:
+            classification[pixel] = 0
+        elif occupancy > occupied:
+            classification[pixel] = 100
+        else:
+            classification[pixel] = UNKNOWN_CELL
+    cells = b"".join(pixels[start:start + width].translate(classification)
+                     for start in range((height - 1) * width, -1, -width))
+    return TrinaryGrid(
+        width, height, resolution, origin, cells,
+        hashlib.sha256(metadata_bytes).hexdigest(), hashlib.sha256(image_bytes).hexdigest(),
+    )
+
+
+def load_map(path: Path) -> OccupancyMap:
+    grid = load_trinary_grid(path)
+    width = grid.width
     known_free = []
-    for y in range(height - 1, -1, -1):
-        row = pixels[y * width:(y + 1) * width]
+    for start in range(0, len(grid.cells), width):
         packed = bytearray((width + 7) // 8)
-        for x, pixel in enumerate(row):
-            if occupancy[pixel] < free:
+        for x, cell in enumerate(grid.cells[start:start + width]):
+            if cell == 0:
                 packed[x // 8] |= 1 << (x % 8)
         known_free.append(int.from_bytes(packed, "little"))
     return OccupancyMap(
-        width, height, resolution, origin, tuple(known_free),
-        hashlib.sha256(metadata_bytes).hexdigest(), hashlib.sha256(image_bytes).hexdigest(),
+        width, grid.height, grid.resolution, grid.origin, tuple(known_free),
+        grid.metadata_sha256, grid.image_sha256,
     )
 
 
