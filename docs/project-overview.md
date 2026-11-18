@@ -4,7 +4,7 @@
 
 当前已完成新 A2 原装前雷达和 IMU 的断网录包、整圈离线建图及闭环复测。自主巡航、控制权交接和实际停车仍待实机验证。软件包实现与现场验收进度见[开发进度说明](implementation-status.md)。
 
-ODIN1 另行验证板载算法。PC2 已接入里程计，开发机在 `LIDAR_MODE_SLAM`、`map_mode=1` 下验证人工保存流程。目前设备保存标志在等待期内保持为 1，尚无本轮地图可供重定位。固件升级由现场操作员负责。[ODIN1 联调记录](implementation-status.md#odin1-内部建图与固件交接)
+ODIN1 使用设备端算法，PC2 已验证里程计接入。开发机使用 SoC 0.14.3、SLAM 0.14.0 和主机 SDK 0.14.5，在 `LIDAR_MODE_SLAM`、`map_mode=1` 下取得首个 97 字节文件。下一轮将采集大地图并复核取图后的停流，随后用 `map_mode=2` 验证重定位。[ODIN1 联调记录](implementation-status.md#odin1-内部建图与固件交接)
 
 ## 运行与维护
 
