@@ -1,0 +1,141 @@
+/* 驾驶舱的颜色和排版独立于深色维护页；二维栅格继续使用原有图层工具。 */
+.ic-root {
+  --ic-ink: #1c302d;
+  --ic-muted: #5e706b;
+  --ic-emerald: #087752;
+  --ic-line: #dce4dd;
+  --ic-mono: "IBM Plex Mono", Consolas, "Liberation Mono", monospace;
+  /* 地图横跨工作区。单独给绘图区分配视口高度，来源与定位栏换行也不会挤占画布。 */
+  --ic-map-height: 49vh;
+  container: cockpit / inline-size;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  padding: 24px clamp(16px, 2.15vw, 32px) 28px;
+  gap: 18px;
+  min-width: 0;
+  color: var(--ic-ink);
+  font-family: "Inter","Noto Sans CJK SC","Microsoft YaHei",system-ui,sans-serif;
+  font-size: 14px;
+}
+.ic-root button { font: inherit; cursor: pointer; }
+.ic-root button:focus-visible, .ic-root input:focus-visible { outline: 3px solid #1c916e; outline-offset: 2px; }
+.ic-root h1,.ic-root h2,.ic-root p { margin: 0; }
+.ic-heading,.ic-kpi-top,.ic-kvalue,.ic-kfoot,.ic-section-head,.ic-section-title,.ic-map-caption,.ic-task-meta,
+.ic-task-progress,.ic-source-button,.ic-panel-link,.ic-text-link,.ic-detail-row,.ic-dialog article header,.ic-dialog footer { display: flex; align-items: center; }
+.ic-heading { justify-content: space-between; gap: 16px; padding: 0 0 2px; }
+.ic-heading h1 { font-size: clamp(25px,2.3vw,34px); font-weight: 730; line-height: 1.25; letter-spacing: -.04em; }
+.ic-heading p { margin-top: 6px; font-size: 13px; color: var(--ic-muted); }
+.ic-source-button { gap: 8px; padding: 8px 11px; border-radius: 7px; border: 1px solid #cdd9d0; background: #fff; color: #53645f; line-height: 1.3; white-space: nowrap; }
+.ic-root .ic-source-button { font-size: 12px; }
+.ic-source-button > svg,.ic-source-button > strong { color: var(--ic-emerald); }
+.ic-source-button > strong { font-weight: 600; }
+.ic-source-button > i { height: 13px; border-left: 1px solid var(--ic-line); }
+.ic-kpis { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 13px; }
+.ic-kpi,.ic-panel { border: 1px solid var(--ic-line); border-radius: 12px; background: #fff; box-shadow: 0 1px 2px #172b2107; }
+.ic-root .ic-kpi { color: var(--ic-ink); padding: 14px 16px; text-align: left; min-width: 0; display: flex; flex-direction: column; justify-content: space-between; min-height: 127px; }
+.ic-kpi:hover,.ic-source-button:hover { background: #fafcf9; border-color: #a7c6b5; }
+.ic-kpi-top { width: 100%; gap: 7px; font-size: 13px; font-weight: 600; }
+.ic-kicon { display: grid; place-items: center; flex: none; width: 26px; height: 26px; border-radius: 7px; color: #187559; background: #e8f4ed; }
+.ic-kicon.blue { background: #eaf0f7; color: #49729c; }
+.ic-kicon.amber { background: #fbf1de; color: #a56818; }
+.ic-tag { display: inline-flex; align-items: center; border: 1px solid #e1e6e2; border-radius: 5px; padding: 2px 5px; line-height: 1.2; font-size: 10px; color: #65736d; background: #f9faf8; font-weight: 500; white-space: nowrap; }
+.ic-kpi-top .ic-tag { margin-left: auto; }
+.ic-kvalue { gap: 9px; margin: 12px 0 9px; font-size: clamp(20px,1.8vw,29px); line-height: 1.15; font-weight: 700; letter-spacing: -.05em; flex-wrap: wrap; }
+.ic-kvalue.ic-num { font-family: var(--ic-mono); font-size: 32px; gap: 4px; }
+.ic-kvalue.ic-task-name { font-size: clamp(18px,1.55vw,24px); }
+.ic-kvalue > small:not(.ic-pill) { font: 500 13px/1.3 system-ui,sans-serif; color: var(--ic-muted); letter-spacing: 0; }
+.ic-kvalue .ic-pill { font-size: 10px; }
+.ic-pill { font-size: 11px; display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px; color: #61716b; background: #f1f4f1; border-radius: 5px; font-weight: 500; line-height: 1.25; letter-spacing: 0; white-space: nowrap; }
+.ic-pill.green { background: #e2f3e9; color: #16734f; }
+.ic-dot,.ic-pill > i,.ic-alert-level i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; flex: none; background: currentColor; }
+.ic-dot.green { color: #259d70; }.ic-dot.red { color: #d66e55; }.ic-dot.amber { color: #d7a14a; }
+.ic-kfoot { gap: 5px; color: var(--ic-muted); font-size: 11px; line-height: 1.4; flex-wrap: wrap; }
+.ic-kfoot b { color: #3b5850; font-weight: 600; }.ic-kfoot em { font-style: normal; color: #6d7973; }
+.ic-divider { margin: 0 3px; color: #b7c2ba; }
+.ic-battery { display: flex; gap: 2px; margin-left: 9px; height: 13px; border: 1px solid #89a997; padding: 2px; border-radius: 3px; position: relative; }
+.ic-battery::after { content: ''; position: absolute; right: -3px; top: 3px; width: 2px; height: 5px; background: #89a997; border-radius: 0 2px 2px 0; }
+.ic-battery i { width: 3px; border-radius: 1px; background: #e4ece5; }.ic-battery i.filled { background: #33946a; }
+.ic-lower { display: grid; grid-template-columns: minmax(240px,1fr) minmax(0,2fr); align-items: start; gap: 16px; }
+.ic-panel { min-width: 0; overflow: hidden; }
+.ic-section-head { padding: 14px 17px; min-height: 54px; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--ic-line); }
+.ic-section-title { gap: 8px; }.ic-section-title > svg { color: #42735f; }
+.ic-section-title h2,.ic-dialog h2 { font-size: 16px; font-weight: 670; line-height: 1.4; color: var(--ic-ink); }
+.ic-switch { display: flex; align-items: center; padding: 2px; background: #f0f3ef; border: 1px solid #e3e8e2; border-radius: 6px; }
+.ic-root .ic-switch button { background: transparent; border: 0; border-radius: 4px; color: #617168; font-size: 11px; padding: 4px 8px; white-space: nowrap; }
+.ic-root .ic-switch button[aria-pressed=true] { background: #fff; color: #126946; box-shadow: 0 1px 3px #10271920; font-weight: 650; }
+.ic-map { display: flex; flex-direction: column; }
+/* 窄屏下让三个视图按钮作为一组换行，保留表头和地图操作区域的可用宽度。 */
+.ic-map > .ic-section-head { flex-wrap: wrap; }
+.ic-scene { height: var(--ic-map-height); position: relative; background: #132523; }
+.ic-scene > :first-child { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0; }
+.ic-map-caption { padding: 10px 15px; justify-content: space-between; flex-wrap: wrap; gap: 10px; min-height: 36px; font-size: 11px; color: var(--ic-muted); }
+.ic-map-source { display: flex; align-items: center; gap: 6px; color: #3f6251; }
+.ic-grid-map { display: flex; }
+.ic-grid-map .map-panel { flex: 1; border: none; border-radius: 0; display: flex; flex-direction: column; color: #e4edf6; background: #121e2d; }
+.ic-grid-map .map-viewport { height: var(--ic-map-height); min-height: 0; flex: none; }
+.ic-shift { display: flex; flex-direction: column; }
+.ic-task-list { padding: 0 17px; flex: 1; display: flex; flex-direction: column; }
+.ic-root .ic-task-row { display: flex; align-items: flex-start; gap: 12px; position: relative; padding: 13px 0; flex: 1; background: transparent; border: none; color: var(--ic-ink); text-align: left; }
+.ic-task-row::before { content: ''; position: absolute; top: 22px; bottom: -19px; left: 5px; border-left: 1px solid #d5e1d8; }
+.ic-task-row:last-child::before { display: none; }
+.ic-timeline-dot { position: relative; flex: none; z-index: 1; width: 11px; height: 11px; margin-top: 4px; border: 2px solid #c5d0c8; background: #fff; border-radius: 50%; }
+.ic-task-row.done .ic-timeline-dot { border-color: #9db2a4; background: #9db2a4; }.ic-task-row.active .ic-timeline-dot { border-color: #15825a; background: #15825a; box-shadow: 0 0 0 3px #e6f3e9; }
+.ic-task-content { flex: 1; min-width: 0; display: block; }
+.ic-task-meta { justify-content: space-between; }
+.ic-task-meta > b { color: #6f7f76; font: 600 12px/1.45 var(--ic-mono); }
+.ic-task-content > strong { display: block; font-size: 14px; line-height: 1.45; font-weight: 650; margin-top: 4px; }
+.ic-task-row:hover .ic-task-content > strong,.ic-table-title:hover { color: var(--ic-emerald); text-decoration: underline; }
+.ic-task-content > small { display: block; margin-top: 3px; font-size: 11px; color: #687970; }.ic-task-content > small span { margin: 0 2px; }
+.ic-task-progress { gap: 8px; margin-top: 7px; }
+.ic-task-progress > i { flex: 1; max-width: 111px; height: 4px; border-radius: 2px; background: linear-gradient(to right,#2e9267 33.33%,#e5ebe4 33.33%); }
+.ic-task-progress small { font-size: 10px; color: #65816d; }
+.ic-root .ic-panel-link { border: none; justify-content: space-between; border-top: 1px solid var(--ic-line); padding: 10px 17px; background: #fff; color: var(--ic-emerald); font-size: 12px; font-weight: 550; }
+.ic-root .ic-panel-link:hover { background: #f5f9f4; }.ic-panel-link span { font-size: 16px; }
+.ic-root .ic-text-link,.ic-root .ic-table-title { padding: 0; background: transparent; border: none; }
+.ic-root .ic-text-link { color: var(--ic-emerald); font-size: 12px; gap: 6px; font-weight: 550; }
+/* 限定隐藏表头的定位参照，让宽表只在本容器内横向滚动。 */
+.ic-table-wrap { position: relative; max-width: 100%; overflow-x: auto; }.ic-alerts table { width: 100%; border-collapse: collapse; font-size: 12px; white-space: nowrap; }
+.ic-alerts th { text-align: left; font-weight: 500; background: #f7f9f6; color: #69776f; }
+.ic-alerts :is(th,td) { padding: 10px 12px; }.ic-alerts :is(th,td):first-child { padding-left: 18px; }
+.ic-alerts td { border-top: 1px solid #e8ede7; color: #4b5e53; }
+.ic-root .ic-table-title { color: var(--ic-ink); font-weight: 550; font-size: 12px; }
+.ic-alert-level { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; padding: 3px 7px; font-size: 11px; border-radius: 4px; }
+.ic-alert-level.red { color: #a44533; background: #faede7; }.ic-alert-level.amber { color: #956517; background: #fbf3e0; }
+.ic-mono { font-family: var(--ic-mono); }.ic-root .ic-empty { padding: 22px 17px; color: var(--ic-muted); font-size: 13px; }
+.ic-sr { position: absolute; clip-path: inset(50%); width: 1px; height: 1px; overflow: hidden; }
+.ic-dialog { width: min(430px,calc(100% - 30px)); max-height: 85dvh; padding: 0; color: var(--ic-ink); background: #fff; border: 1px solid #d0dad2; border-radius: 14px; box-shadow: 0 18px 75px #10271d35; }
+.ic-dialog::backdrop { background: #14261d55; }
+.ic-dialog article { padding: 20px; }.ic-dialog article header { justify-content: space-between; margin-bottom: 13px; }
+.ic-dialog article header > button { border: none; font-size: 23px; line-height: 1; color: #44554d; background: #f2f5f1; border-radius: 6px; width: 27px; height: 27px; }
+.ic-dialog dl { margin: 5px 0 16px; }
+.ic-dialog dl > div,.ic-detail-row { display: flex; justify-content: space-between; gap: 15px; padding: 10px 0; border-bottom: 1px solid var(--ic-line); font-size: 13px; }
+.ic-dialog dt { min-width: 75px; color: var(--ic-muted); }.ic-dialog dd { text-align: right; margin: 0; }
+.ic-dialog p { font-size: 12px; color: var(--ic-muted); line-height: 1.7; margin: 8px 0; }.ic-dialog fieldset { padding: 10px 12px; border: 1px solid var(--ic-line); border-radius: 7px; }
+.ic-dialog legend { color: var(--ic-emerald); font-size: 12px; }.ic-dialog label { display: block; padding: 4px; font-size: 13px; }.ic-dialog input { accent-color: var(--ic-emerald); }
+.ic-dialog .ic-detail-row { width: 100%; background: none; border: 0; border-bottom: 1px solid var(--ic-line); text-align: left; color: var(--ic-ink); }
+.ic-dialog footer { flex-wrap: wrap; gap: 8px; }
+.ic-dialog .ic-action,.ic-dialog .ic-secondary { background: #0f7952; color: #fff; font-size: 12px; font-weight: 600; padding: 9px 12px; border: none; border-radius: 6px; }
+.ic-dialog .ic-secondary { color: #3c584b; background: #e9f1e9; }
+@container cockpit (max-width: 900px) {
+  .ic-kpis { gap: 8px; }.ic-root .ic-kpi { padding: 12px; }.ic-kpi-top { flex-wrap: wrap; }
+  .ic-lower { grid-template-columns: minmax(0,1fr); }
+}
+@container cockpit (max-width: 735px) {
+  .ic-kpis { grid-template-columns: repeat(2,minmax(0,1fr)); }.ic-root .ic-kpi { min-height: 111px; }
+  .ic-shift .ic-task-list { padding: 0 14px; }.ic-task-row::before { bottom: -16px; }
+}
+@container cockpit (max-width: 450px) {
+  .ic-heading { align-items: flex-start; }.ic-heading h1 { font-size: 24px; }.ic-heading p { font-size: 11px; }
+  .ic-root .ic-source-button { gap: 4px; padding: 6px; font-size: 10px; }.ic-source-button svg { display: none; }
+  .ic-section-head { padding: 10px 12px; }.ic-section-title { gap: 5px; }.ic-section-title h2 { font-size: 14px; }
+  .ic-kpi-top { font-size: 11px; gap: 4px; }.ic-kicon { width: 22px; height: 22px; }.ic-task-name { line-height: 1.3; }
+  .ic-root .ic-kpi { padding: 10px; }.ic-tag { font-size: 9px; }.ic-switch button { padding: 3px 6px; }
+}
+
+@media (max-width: 760px) {
+  .ic-root { padding: 16px; gap: 14px; }
+}
+/* 移动浏览器的地址栏展开或收起时，以当下可见高度为准。 */
+@supports (height: 1dvh) {
+  .ic-root { --ic-map-height: 49dvh; }
+}

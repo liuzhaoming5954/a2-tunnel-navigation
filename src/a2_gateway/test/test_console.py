@@ -1,7 +1,9 @@
+import hashlib
 import http.client
 import json
 from pathlib import Path
 import socket
+import struct
 import tempfile
 import threading
 import time
@@ -13,6 +15,54 @@ from a2_gateway.simulator import DEADMAN_SECONDS, Simulator
 
 
 class ConsoleGatewayTest(unittest.TestCase):
+    def test_odin1_cloud_routes_serve_only_matching_static_points(self):
+        # 以合成的单点夹具覆盖来源、版本切换和不完整部署，测试可独立于现场地图运行。
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            points = struct.pack("<fffBBBB", 1., 2., 3., 7, 8, 9, 255)
+            digest = hashlib.sha256(points).hexdigest()
+            manifest = {"sourceName": "example.pcd", "sourcePoints": 2, "pointCount": 1,
+                        "encoding": "xyz-f32le-rgba-u8", "strideBytes": 16, "sampleSha256": digest,
+                        "viewBounds": {"min": [1, 2, 3], "max": [1, 2, 3]}}
+            server = GatewayServer(("127.0.0.1", 0), Simulator(), mode="simulator", odin1_map_dir=root)
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            self.addCleanup(worker.join, 2)
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+
+            def get(route, method="GET"):
+                conn = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=2)
+                try:
+                    conn.request(method, "/api/maps/odin1/" + route)
+                    response = conn.getresponse()
+                    return response.status, response.getheader("Content-Type"), response.read()
+                finally:
+                    conn.close()
+
+            self.assertEqual(get("metadata")[0], 404)
+            (root / "metadata.json").write_text(json.dumps(manifest), encoding="utf-8")
+            self.assertEqual(get("points")[0], 404)
+            (root / "points.bin").write_bytes(points)
+            status, _, value = get("metadata")
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(value), manifest)
+            # 模拟网关有二维坐标，未配置 ODIN1 来源时点云接口仍须等待实测数据。
+            status, _, state = get("pose?version=" + digest)
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(state)["status"], "waiting")
+            self.assertIsNone(json.loads(state)["pose"])
+            self.assertEqual(get("points?version=" + digest), (200, "application/octet-stream", points))
+            self.assertEqual(get("points", method="HEAD"), (200, "application/octet-stream", b""))
+            self.assertEqual(get("points?version=old")[0], 409)
+            self.assertEqual(get("example.pcd")[0], 404)
+            self.assertEqual(get("points", method="POST")[0], 404)
+            # 等长内容变更及截断文件都无法冒用旧清单；两种接口一致报告数据异常。
+            (root / "points.bin").write_bytes(bytes(len(points)))
+            self.assertEqual(get("points")[0], 503)
+            (root / "points.bin").write_bytes(b"")
+            self.assertEqual(get("metadata")[0], 503)
+
     def test_session_deadman_stops_motion_and_rejects_delayed_commands(self):
         simulator = Simulator()
         self.addCleanup(simulator.close)
