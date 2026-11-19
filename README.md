@@ -4,7 +4,7 @@
 
 **当前已完成新 A2 的整圈断网录包、离线建图和闭环候选地图。** 同一录包的有序回放已可复现。地图尺度、重定位、实机控制权和停车仍待验收，M0 未关闭。当前状态见[开发进度说明](docs/implementation-status.md)。
 
-**ODIN1 板载建图已在开发机完成首次取图。** 固件升级后，使用 v0.14.5 主机 SDK 取回 97 字节的 `.bin`，传输校验通过。取图后取消建图时停流超时，大地图和重定位待验证。[建图程序](scripts/odin1-local-mapping/README.md) · [实测记录](docs/implementation-status.md#odin1-内部建图与固件交接)
+**ODIN1 已在 PC2 完成遥控行走两点重定位测试。** 现场人员确认两处停车点读数符合预期。开发机此前已从设备内部建图模式取回首个 97 字节文件，大地图采集和取图后的停流仍待验证。[实测记录](docs/implementation-status.md#odin1-内部建图与固件交接) · [建图程序](scripts/odin1-local-mapping/README.md)
 
 ## 文档入口
 

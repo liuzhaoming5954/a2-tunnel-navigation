@@ -85,6 +85,13 @@ colcon test-result --verbose
 
 地图、标定、设备加密日志、操作记录和运行快照保存在受控目录；证据索引记录版本、时间、文件大小及校验值，公开文档仅保存脱敏结论。开发机通过后，再按机载目标的实际 CPU 架构和系统版本验证。
 
+### 3.2 PC2 上的 ODIN1 两点重定位
+
+1. 在 PC2 核对地图校验值和驱动版本。以里程计模式启动 v0.14.5 驱动，通过 `/odin1/set_reloc_map` 传入地图在 PC2 上的绝对路径。等日志出现该路径对应的 `Relocalization map swap completed`，再调用 `/odin1/set_slam_mode` 切到模式 2，检查服务返回值。
+2. 确认驱动已收到重定位变换，且终端持续刷新同一设备时刻的里程计与地图变换。驱动发布的两个变换分别把 IMU 和地图坐标变换到 `odom`。计算 `T_map_imu = inverse(T_odom_map) × T_odom_imu`，显示 ODIN1 IMU 原点的 X、Y、Z（米）。航向取 IMU 的 +X 轴在地图 XY 平面上的投影，从地图 +X 向 +Y 为正（度）。
+3. 现场人员用原厂遥控器行走，在两个已知点按同一传感器参考位置对准、停稳并标记。此轮在每次标记后采集约 0.8 秒，取窗口中间帧。复核时计算水平直线间距和带符号的航向变化。有独立测量的参考位置或朝向时，逐点计算误差。厂商 v0.14.5 在模式 2 收到首条重定位 TF 时就会打印 `relocalization success!`。[驱动回调](https://github.com/manifoldsdk/odin_ros_driver/blob/9487890acd648f1c7647576d1ad2b04dd7fd3677/src/host_sdk_sample.cpp#L1327)
+4. 两点记录完成后恢复模式 0，核对服务回执、停流结果和驱动退出码。测点坐标、轨迹和设备日志保存在受控目录。[本轮实测记录](implementation-status.md#odin1-内部建图与固件交接)
+
 ## 4. mock、回放和硬件隔离
 
 | 模式 | 输入与输出 | 运行边界 |
