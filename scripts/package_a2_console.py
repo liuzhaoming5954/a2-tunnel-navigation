@@ -14,10 +14,12 @@ DIST = Path("src/a2_gateway/web/dist")
 FILES = (
     "scripts/start_a2_console_readonly.sh",
     "scripts/run_a2_console.py",
+    "scripts/observe_odin1_pose.py",
     "scripts/publish_a2_map.py",
     "scripts/publish_a2_platform_state.py",
     "src/a2_gateway/a2_gateway/__init__.py",
     "src/a2_gateway/a2_gateway/motion.py",
+    "src/a2_gateway/a2_gateway/odin1_pose.py",
     "src/a2_gateway/a2_gateway/ros_telemetry.py",
     "src/a2_gateway/a2_gateway/server.py",
     "src/a2_gateway/a2_gateway/simulator.py",

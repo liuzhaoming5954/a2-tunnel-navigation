@@ -2,6 +2,20 @@
 defineProps({ name: { type: String, required: true }, size: { type: Number, default: 18 } })
 
 const paths = {
+  // 工作区导航沿用同一套描边图标，保证离线部署时不请求任何图标服务。
+  tunnel: ['M2 19 8 5h8l6 14', 'M7 19l4-10h2l4 10', 'M10 19h4'],
+  cockpit: ['M3 3h8v8H3zM14 3h7v5h-7zM14 11h7v10h-7zM3 14h8v7H3z'],
+  clipboard: ['M8 5H5v16h14V5h-3','M9 3h6v4H9zM8 11h8m-8 4h6'],
+  layers: ['m3 8 9-5 9 5-9 5-9-5Zm0 5 9 5 9-5m-18 5 9 5 9-5'],
+  analysis: ['M3 3v18h18','m6-7 4-5 4 3 5-7'],
+  chart: ['M3 21h18M5 18v-5h3v5m3 0V6h3v12m3 0v-9h3v9'],
+  settings: ['M4 6h16M4 12h16M4 18h16','M8 3v6m8 0v6m-7 0v6'],
+  chevron: ['m9 5 7 7-7 7'],
+  next: ['M4 12h15m-6-6 6 6-6 6'],
+  terminal: ['M3 4h18v16H3z','m6 8 3 3-3 3m6 0h3'],
+  workspace: ['M3 4h18v16H3zM3 9h18m-12 0v11'],
+  menu: ['M3 6h18M3 12h18M3 18h18'],
+  close: ['m6 6 12 12M18 6 6 18'],
   logo: ['m5 18 7-12 7 12', 'M8 13h8M12 6V3M5 18H2m17 0h3'],
   radar: ['M20.5 13a8.5 8.5 0 1 1-9.5-9.5', 'M16 13a4 4 0 1 1-5-5', 'm13 11 7-7', 'M18 4h2v2'],
   gamepad: ['M7 7h10a4 4 0 0 1 3.8 2.8l1 4.4a3 3 0 0 1-4.8 3.1L15 15H9l-2 2.3a3 3 0 0 1-4.8-3.1l1-4.4A4 4 0 0 1 7 7Z', 'M7 10v4m-2-2h4m6 0h.01M18 10h.01'],

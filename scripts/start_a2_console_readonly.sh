@@ -24,9 +24,17 @@ python3 "$root/scripts/publish_a2_platform_state.py" \
   --network-interface "$A2_SDK_NIC" --unitree-domain-id "$A2_SDK_DOMAIN_ID" \
   --robot-id "$A2_ROBOT_ID" &
 children+=("$!")
+# ODIN1 在自己的驱动域采集定位。此处仅把同机状态文件交给网关，两个 ROS 域可独立运行。
+odin_args=()
+if [[ -n "${A2_ODIN1_POSE_FILE:-}" ]]; then
+  odin_args+=(--odin1-pose-file "$A2_ODIN1_POSE_FILE")
+fi
+if [[ -n "${A2_ODIN1_MAP_DIR:-}" ]]; then
+  odin_args+=(--odin1-map-dir "$A2_ODIN1_MAP_DIR")
+fi
 python3 "$root/scripts/run_a2_console.py" --ros --host 127.0.0.1 \
-  --port "${A2_CONSOLE_PORT:-8765}" &
+  --port "${A2_CONSOLE_PORT:-8765}" "${odin_args[@]}" &
 children+=("$!")
 
-# A required child exiting ends this maintenance session and cleans up its peers.
+# 任一必需的子进程退出时，结束本次维护会话并清理其他子进程。
 wait -n "${children[@]}"

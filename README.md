@@ -6,6 +6,8 @@
 
 **ODIN1 已在 PC2 完成遥控行走两点重定位测试。** 现场人员确认两处停车点读数符合预期。开发机此前已从设备内部建图模式取回首个 97 字节文件，大地图采集和取图后的停流仍待验证。[实测记录](docs/implementation-status.md#odin1-内部建图与固件交接) · [建图程序](scripts/odin1-local-mapping/README.md)
 
+**巡检驾驶舱已在实测点云上显示 ODIN1 传感器的实时位置和航向。** PC2 只读网关提供定位数据，样本达到 750 毫秒的有效期限时，页面撤下位置标记。桌面和手机六种窗口尺寸下，地图绘图区占首屏面积的 38%–47%。传感器到机身的安装偏移及地图绝对定位精度待现场核对。[驾驶舱接入说明](docs/a2-operator-console.md) · [验证结果](docs/implementation-status.md#巡检驾驶舱)
+
 ## 文档入口
 
 | 文档 | 用途 |
@@ -21,6 +23,8 @@
 | [实机录包与建图验证](docs/mapping-capture.md) | 核查原装传感器、采集真实数据并带回本机分析 |
 | [首次受控运动与停车验证](docs/a2-first-motion-test.md) | 核对实机控制权、独立停车、接收端失联停车及实测记录 |
 | [A2 地图目标点验证](docs/a2-goal-validation.md) | 导出离线栅格、规划地图目标、检查定位输入和实机试验前置条件 |
+| [A2 上位机操作说明](docs/a2-operator-console.md) | 启动驾驶舱，在实测点云上查看 ODIN1 传感器位姿，核对本体、任务和告警的数据来源 |
+| [上位机设计方案](docs/design/a2-operator-console-design.md) | 14 项功能的页面、交互、复用与新增、验收标准；国产化适配列为后期 |
 | [建图准备状态](docs/mapping-readiness.md) | 本机候选构建、无输入启动检查、适配要求及待验证项 |
 | [模拟任务演示](docs/mock-mission.md) | 一键启动 mock，任务服务、故障与持久恢复 |
 | [ROS 只读演示](docs/platform-readonly.md) | 构建节点、观察状态/诊断、查询与模拟断流 |
