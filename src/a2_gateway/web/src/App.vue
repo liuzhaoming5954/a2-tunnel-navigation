@@ -14,43 +14,62 @@ const gateway = useGateway()
 const { state, map, mapStatus, connection, phase } = gateway
 const current = ref(readPage())
 const info = computed(() => pageInfo(current.value))
-const openGroups = ref(new Set(['巡检作业', '处置与报告', info.value.section]))
+// 系统管理菜单保留维护遥控入口，各模块继续使用原有哈希地址。
+const menuGroups = groups.map(group => group.title === '系统管理'
+  ? { ...group, pages: [...group.pages, ['maintenance', '维护遥控']] }
+  : group)
+const activeGroup = computed(() => menuGroups.find(group => group.pages.some(([id]) => id === current.value))?.title)
+const openGroup = ref(null)
 const mobileOpen = ref(false)
 const navToggle = ref(null)
 const navHome = ref(null)
-const clock = ref(new Date())
-const smallScreen = window.matchMedia('(max-width: 760px)')
-let clockTimer
-const dateFormat = new Intl.DateTimeFormat('zh-CN', {year:'numeric',month:'2-digit',day:'2-digit', weekday:'short'})
-const timeFormat = new Intl.DateTimeFormat('zh-CN', {hour:'2-digit',minute:'2-digit',hour12:false})
-const gatewayLabel = computed(() => {
-  if (connection.value !== 'connected') return connection.value === 'connecting' ? '网关连接中' : '网关离线'
-  if (state.value?.deployment === 'station') {
-    if (state.value.pc2_connected) return '上位机在线 · PC2 已连接'
-    return state.value.pc2_reason === 'pc2_invalid_response' ? '上位机在线 · PC2 接口异常' : '上位机在线 · PC2 未连接'
+const navList = ref(null)
+const workArea = ref(null)
+const compact = window.matchMedia('(max-width: 860px)')
+
+// 轮询成功只说明当前网关可访问。PC2 的灯单独取上位机本次请求的结果，掉线时不沿用上次的在线指示。
+const gatewayStatus = computed(() => {
+  const snapshot = state.value
+  if (connection.value !== 'connected') {
+    if (snapshot?.deployment === 'station') return [
+      { text: '上位机未连接', tone: 'offline' }, { text: 'PC2 状态未知', tone: 'unknown' },
+    ]
+    return [{ text: connection.value === 'connecting' ? '网关连接中' : '网关离线', tone: 'unknown' }]
   }
-  return { simulator:'模拟网关在线', robot_readonly:'实机网关 · 只读', robot:'实机网关在线' }[state.value?.mode] ?? '来源未知'
+  if (snapshot.deployment === 'station') {
+    let remote = { text: 'PC2 状态未知', tone: 'unknown' }
+    if (snapshot.pc2_connected === true) remote = { text: 'PC2 已连接', tone: 'online' }
+    else if (snapshot.pc2_reason === 'pc2_invalid_response') remote = { text: 'PC2 接口异常', tone: 'offline' }
+    else if (snapshot.pc2_connected === false) remote = { text: 'PC2 未连接', tone: 'offline' }
+    return [{ text: '上位机在线', tone: 'online' }, remote]
+  }
+  if (snapshot.mode === 'simulator') return [{ text: '模拟网关在线', tone: 'simulation' }]
+  if (snapshot.mode === 'robot_readonly') return [{ text: '实机网关 · 只读', tone: 'online' }]
+  if (snapshot.mode === 'robot') return [{ text: '实机网关在线', tone: 'online' }]
+  return [{ text: '网关来源未知', tone: 'unknown' }]
 })
 
-function toggleGroup(title) {
-  const open = new Set(openGroups.value)
-  if (open.has(title)) open.delete(title)
-  else open.add(title)
-  openGroups.value = open
-}
-
 function closeNav(restoreFocus = false) {
+  openGroup.value = null
   mobileOpen.value = false
   if (restoreFocus) nextTick(() => navToggle.value?.focus())
 }
 
 function handleMenu() {
-  mobileOpen.value = !mobileOpen.value
-  // 移动端抽屉覆盖维护操作区。先撤销本页控制意图，避免遮挡期间继续占用会话。
   if (mobileOpen.value) {
-    if (current.value === 'maintenance') void gateway.stop('打开导航，解除维护控制')
-    nextTick(() => navHome.value?.focus())
+    closeNav(true)
+    return
   }
+  // 抽屉覆盖维护操作区，先解除当前控制，避免菜单展开期间仍占用会话。
+  if (current.value === 'maintenance') void gateway.stop('打开导航，解除维护控制')
+  mobileOpen.value = true
+  openGroup.value = activeGroup.value
+  nextTick(() => navHome.value?.focus())
+}
+
+function navigate() {
+  closeNav()
+  nextTick(() => workArea.value?.focus({ preventScroll: true }))
 }
 
 function onHashChange() {
@@ -59,81 +78,84 @@ function onHashChange() {
   if (current.value === 'maintenance') void gateway.stop('离开维护遥控页面，解除控制')
   current.value = next
   closeNav()
-  openGroups.value = new Set([...openGroups.value, info.value.section])
   window.scrollTo(0, 0)
 }
 
-function resized(event) {
-  if (!event.matches) closeNav()
+function onLayoutChange() {
+  closeNav()
+}
+
+function onOutsideNav(event) {
+  if (!mobileOpen.value && !navList.value?.contains(event.target)) openGroup.value = null
 }
 
 function menuKey(event) {
-  if (!mobileOpen.value) return
-  if (event.key === 'Escape') { closeNav(true); return }
-  if (event.key !== 'Tab') return
-  // 导航展开时，键盘焦点循环保持在可见的抽屉条目中。
-  const items = [...document.querySelectorAll('.portal-sidebar a, .portal-sidebar button')].filter(el => el.offsetWidth)
-  const edge = event.shiftKey ? items[0] : items.at(-1)
-  if (edge && document.activeElement === edge) {
+  if (event.key === 'Escape') {
+    if (mobileOpen.value) closeNav(true)
+    else if (openGroup.value) {
+      // 收起桌面子菜单后将焦点还给开启它的按钮，方便键盘连续切换模块。
+      navList.value?.querySelector('button[aria-expanded="true"]')?.focus()
+      openGroup.value = null
+    }
+    return
+  }
+  if (!mobileOpen.value || event.key !== 'Tab') return
+  const items = [...navList.value.querySelectorAll('a, button')].filter(item => item.offsetWidth)
+  if (document.activeElement === (event.shiftKey ? items[0] : items.at(-1))) {
     event.preventDefault()
-    const nextItem = event.shiftKey ? items.at(-1) : items[0]
-    nextItem.focus()
+    const target = event.shiftKey ? items.at(-1) : items[0]
+    target.focus()
   }
 }
 
-watch(info, item => { document.title = item.title + ' · A2 巡检平台' }, { immediate: true })
+watch(info, item => { document.title = item.title + ' · A2 管廊巡检工作站' }, { immediate: true })
 onMounted(() => {
-  clockTimer = setInterval(() => { clock.value = new Date() }, 10000)
-  smallScreen.addEventListener('change', resized)
+  compact.addEventListener('change', onLayoutChange)
+  document.addEventListener('pointerdown', onOutsideNav)
+  document.addEventListener('focusin', onOutsideNav)
   window.addEventListener('hashchange', onHashChange)
   window.addEventListener('keydown', menuKey)
 })
 onBeforeUnmount(() => {
-  clearInterval(clockTimer)
-  smallScreen.removeEventListener('change', resized)
+  compact.removeEventListener('change', onLayoutChange)
+  document.removeEventListener('pointerdown', onOutsideNav)
+  document.removeEventListener('focusin', onOutsideNav)
   window.removeEventListener('hashchange', onHashChange)
   window.removeEventListener('keydown', menuKey)
 })
 </script>
 
 <template>
-  <div class="portal">
-    <a class="portal-skip" href="#workspace-content" @click.prevent="$refs.workArea.focus()">跳至页面内容</a>
-    <button v-if="mobileOpen" class="portal-scrim" aria-label="关闭导航遮罩" tabindex="-1" @click="closeNav(true)" />
-    <aside id="workspace-nav" class="portal-sidebar" :class="{ 'is-open': mobileOpen }" aria-label="工作区">
-      <a href="#/cockpit" class="portal-brand" @click="closeNav()">
-        <span class="portal-mark" aria-hidden="true"><Icon name="tunnel" :size="24" /></span>
-        <span class="portal-brand-name"><strong>A2 巡检平台</strong><small>管廊机器人工作台</small></span>
+  <div class="portal" :class="{ 'is-cockpit': current === 'cockpit' }">
+    <a class="portal-skip" href="#workspace-content" @click.prevent="workArea.focus()">跳至页面内容</a>
+    <header class="portal-bar">
+      <button ref="navToggle" type="button" class="portal-mobile-toggle" aria-label="打开导航" aria-controls="workspace-nav" :aria-expanded="mobileOpen" @click="handleMenu"><Icon name="menu" /></button>
+      <a href="#/cockpit" class="portal-brand" @click="navigate">
+        <span class="portal-mark"><Icon name="tunnel" :size="22" /></span>
+        <strong>A2 管廊巡检工作站</strong>
       </a>
-      <button type="button" class="portal-nav-close" aria-label="关闭导航" @click="closeNav(true)"><Icon name="close" /></button>
-      <nav aria-label="主导航" class="portal-nav-list">
-        <div class="portal-nav-label">工作空间</div>
-        <a ref="navHome" href="#/cockpit" class="portal-main-link" :aria-current="current === 'cockpit' ? 'page' : undefined" @click="closeNav()">
-          <Icon name="cockpit" />巡检驾驶舱
-        </a>
-        <template v-for="(group, index) in groups" :key="group.title">
-          <div v-if="index === 4" class="portal-nav-label portal-nav-rule">平台与维护</div>
-          <button type="button" class="portal-group" :aria-expanded="openGroups.has(group.title)" :aria-controls="'nav-group-'+index" @click="toggleGroup(group.title)">
-            <Icon :name="group.icon" /><span>{{ group.title }}</span>
-            <Icon name="chevron" class="portal-chevron" :class="{expanded: openGroups.has(group.title)}" :size="15" />
+      <button v-if="mobileOpen" class="portal-scrim" aria-label="关闭导航遮罩" tabindex="-1" @click="closeNav(true)" />
+      <nav id="workspace-nav" ref="navList" aria-label="主导航" class="portal-nav-list" :class="{ 'is-open': mobileOpen }">
+        <button type="button" class="portal-nav-close" aria-label="关闭导航" @click="closeNav(true)"><Icon name="close" /></button>
+        <a ref="navHome" href="#/cockpit" class="portal-nav-tab" :aria-current="current === 'cockpit' ? 'page' : undefined" @click="navigate">驾驶舱</a>
+        <div v-for="(group, index) in menuGroups" :key="group.title" class="portal-nav-group">
+          <button type="button" class="portal-nav-tab" :class="{ 'is-current': activeGroup === group.title }"
+            :aria-expanded="openGroup === group.title" :aria-controls="'nav-group-'+index"
+            @click="openGroup = openGroup === group.title ? null : group.title">
+            {{ group.title }}<Icon class="portal-chevron" name="chevron" :size="13" />
           </button>
-          <div v-show="openGroups.has(group.title)" :id="'nav-group-'+index" class="portal-subnav">
-            <a v-for="[id, title] in group.pages" :key="id" :href="'#/'+id" :aria-current="current === id ? 'page' : undefined" @click="closeNav()">{{ title }}</a>
+          <div v-show="openGroup === group.title" :id="'nav-group-'+index" class="portal-subnav">
+            <a v-for="[id, title] in group.pages" :key="id" :href="'#/'+id" :aria-current="current === id ? 'page' : undefined" @click="navigate">{{ title }}</a>
           </div>
-        </template>
-        <a href="#/maintenance" class="portal-main-link" :aria-current="current === 'maintenance' ? 'page' : undefined" @click="closeNav()">
-          <Icon name="gamepad" />维护遥控
-        </a>
+        </div>
       </nav>
-      <div class="portal-foot"><span class="portal-foot-icon"><Icon name="terminal" :size="17" /></span><span><strong>本地工作区</strong><small>Unitree A2</small></span></div>
-    </aside>
+      <div class="portal-link-state" role="status" aria-live="polite" aria-atomic="true">
+        <span v-for="indicator in gatewayStatus" :key="indicator.text" class="portal-indicator" :class="'is-'+indicator.tone">
+          <i aria-hidden="true"></i>{{ indicator.text }}
+        </span>
+      </div>
+    </header>
     <div class="portal-work" :inert="mobileOpen">
-      <header class="portal-bar">
-        <button ref="navToggle" type="button" class="portal-mobile-toggle" aria-label="打开导航" aria-controls="workspace-nav" :aria-expanded="mobileOpen" @click="handleMenu"><Icon name="menu" /></button>
-        <div class="portal-crumb"><span>{{ info.section }}</span><Icon name="chevron" :size="12"/><strong>{{ info.title }}</strong></div>
-        <time class="portal-time" :datetime="clock.toISOString()"><span>{{ dateFormat.format(clock) }}</span><b>{{ timeFormat.format(clock) }}</b></time>
-        <span class="portal-link-state" role="status" :class="{online: connection === 'connected' && state?.pc2_connected !== false}"><i aria-hidden="true"></i>{{ gatewayLabel }}</span>
-      </header>
       <main id="workspace-content" ref="workArea" class="portal-content" tabindex="-1">
         <aside v-if="current !== 'maintenance' && ['stopping','stop_unconfirmed'].includes(phase)" role="status" class="portal-stop-status">
           {{ phase === 'stopping' ? '正在确认维护控制解除' : '维护控制停止待确认' }} <a href="#/maintenance">查看维护状态</a>
@@ -142,8 +164,10 @@ onBeforeUnmount(() => {
         <MaintenanceConsole v-else-if="current === 'maintenance'" :gateway="gateway" />
         <PatrolTask v-else-if="current === 'tasks' && state?.deployment === 'simulator'"
           :state="state" :connection="connection" />
-        <SingleGoalTask v-else-if="current === 'tasks' && state?.deployment === 'station' && state.single_goal_enabled === true"
-          :connection="connection" />
+        <!-- 只读站也展示目标表单。部署权限改变时重建组件，上一轮轮询或发令的回执不会更新新页面。 -->
+        <SingleGoalTask v-else-if="current === 'tasks' && state?.deployment === 'station'"
+          :key="state.single_goal_enabled === true ? 'enabled' : 'readonly'"
+          :enabled="state.single_goal_enabled === true" :connection="connection" />
         <section v-else class="portal-reserved">
           <header class="portal-page-heading"><h1>{{ info.title }}</h1><span v-if="info.subject" class="portal-planned">模块待接入</span></header>
           <div class="portal-empty">

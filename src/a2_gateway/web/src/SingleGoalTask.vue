@@ -2,7 +2,10 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { describeError, request } from './useGateway.js'
 
-const props = defineProps({ connection: { type: String, required: true } })
+const props = defineProps({
+  connection: { type: String, required: true },
+  enabled: { type: Boolean, required: true },
+})
 const endpoint = '/api/navigation/goal'
 const phases = {
   idle: '等待目标', sending: '等待 Nav2 接收', active: '正在导航', canceling: '等待取消结果',
@@ -42,7 +45,8 @@ function previousRequest() {
   } catch { /* 禁用浏览器存储时仍可通过 PC2 的当前状态恢复界面。 */ }
   return null
 }
-const pending = ref(previousRequest())
+// 只读页面不恢复或清理未决收据，留给显式启用导航的页面与 PC2 核对。
+const pending = ref(props.enabled ? previousRequest() : null)
 function remember(ticket) {
   pending.value = ticket
   try {
@@ -57,13 +61,13 @@ const readiness = ref(null)
 const busy = ref(false)
 const readError = ref('')
 const actionError = ref('')
-const online = computed(() => props.connection === 'connected' && goal.value && !readError.value)
+const online = computed(() => props.enabled && props.connection === 'connected' && goal.value && !readError.value)
 // 当前目标若已被换成第三个 ID，GET 无法证明旧请求的终态。页面只提示核查，不重发旧目标。
 const replaced = computed(() => pending.value && goal.value &&
   goal.value.goal_id !== pending.value.body.goal_id && goal.value.goal_id !== pending.value.previousId)
 const canPrepare = computed(() => online.value && !busy.value && !replaced.value && terminal.has(goal.value.phase))
 const canSubmit = computed(() => canPrepare.value && (pending.value || readiness.value?.ready !== false))
-const canCancel = computed(() => !busy.value && goal.value?.goal_id &&
+const canCancel = computed(() => props.enabled && !busy.value && goal.value?.goal_id &&
   ['sending','active','uncertain'].includes(goal.value.phase))
 const coordinates = computed(() => {
   if (!goal.value?.goal_id) return ''
@@ -104,7 +108,8 @@ function update(response, fromStatus = false) {
 }
 async function poll() {
   clearTimeout(timer)
-  if (!alive || busy.value) return
+  // 默认站端没有导航接口。只读表单只依赖站端自己的状态，不轮询 PC2 目标。
+  if (!alive || !props.enabled || busy.value) return
   const current = ++version
   try {
     const response = await request(endpoint)
@@ -125,7 +130,7 @@ function newGoalId() {
   return [hex.slice(0,8), hex.slice(8,12), hex.slice(12,16), hex.slice(16,20), hex.slice(20)].join('-')
 }
 async function command(cancel = false) {
-  if (busy.value || (cancel ? !canCancel.value : !canSubmit.value)) return
+  if (!alive || !props.enabled || busy.value || (cancel ? !canCancel.value : !canSubmit.value)) return
   const observed = goal.value
   let body = pending.value?.body
   if (!cancel && !body) {
@@ -214,7 +219,8 @@ onBeforeUnmount(() => { alive = false; ++version; clearTimeout(timer) })
       </form>
       <section class="goal-card">
         <h2>导航反馈</h2>
-        <p class="phase" role="status">{{ online ? phases[goal.phase] : '等待 PC2 导航状态' }}</p>
+        <p v-if="!enabled" class="phase" role="status">上位机为只读模式，单点导航未启用。</p>
+        <p v-else class="phase" role="status">{{ online ? phases[goal.phase] : '等待 PC2 导航状态' }}</p>
         <p v-if="online && readiness" role="status" :class="{ error: !readiness.ready }">
           {{ readiness.ready ? 'PC2 导航已就绪' : 'PC2 导航未就绪' }}
           <span v-if="!readiness.ready"> · {{ messages[readiness.reason] ?? describeError(readiness.reason) }}</span>

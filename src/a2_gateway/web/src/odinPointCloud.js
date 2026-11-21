@@ -1,5 +1,5 @@
 // 复用离线预览的正交投影与点深度比较。实测点和 ODIN1 传感器共用同一地图相机。
-const HOME_ELEVATION = 0.63
+const HOME_ELEVATION = 0.60
 const VERTICAL = Math.PI / 2
 const RECORD_BYTES = 16
 const littleEndian = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1
@@ -10,15 +10,58 @@ function pixel(red, green, blue) {
     ? (red | (green << 8) | (blue << 16) | 0xff000000) >>> 0
     : ((red << 24) | (green << 16) | (blue << 8) | 255) >>> 0
 }
-// 绘图背景与组件底色 #151b30 保持一致，实测点仍以采集时的 RGB 覆盖背景。
-const background = pixel(21, 27, 48)
+// 图尺按正交相机的水平屏幕轴标定，采用测绘常用的 1、2、5 刻度；放大后自动换单位长度。
+function scaleBar(pixelsPerMeter) {
+  const target = 78 / pixelsPerMeter
+  const decade = 10 ** Math.floor(Math.log10(target))
+  const meters = [1, 2, 5, 10].map(value => value * decade)
+    .reduce((best, value) => Math.abs(value - target) < Math.abs(best - target) ? value : best)
+  return { meters: Number(meters.toPrecision(3)), width: meters * pixelsPerMeter }
+}
 
-export function createOdinView(canvas, metadata, buffer, showMarker) {
+// 把视口四角反投影到地图水平面，只绘制可见范围的米制网格。正侧视时投影退化成直线，省略网格。
+function drawGroundGrid(context, dpr, transform, step) {
+  const { width, height } = context.canvas
+  const inverse = transform.inverse()
+  const xs = [], ys = []
+  for (const px of [0, width]) {
+    for (const py of [0, height]) {
+      const corner = inverse.transformPoint({ x: px, y: py })
+      xs.push(corner.x)
+      ys.push(corner.y)
+    }
+  }
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys)
+  const xStart = Math.ceil(minX / step), xEnd = Math.floor(maxX / step)
+  const yStart = Math.ceil(minY / step), yEnd = Math.floor(maxY / step)
+  // 当坐标量级已超出整数格号的精度，跳过辅助层，避免格号累加失效而卡住实测点显示。
+  if (![xStart, xEnd, yStart, yEnd].every(Number.isSafeInteger)) return
+  const line = (x1, y1, x2, y2) => {
+    const start = transform.transformPoint({ x: x1, y: y1 })
+    const end = transform.transformPoint({ x: x2, y: y2 })
+    context.moveTo(start.x, start.y)
+    context.lineTo(end.x, end.y)
+  }
+  for (const major of [true, false]) {
+    context.beginPath()
+    for (let i = xStart; i <= xEnd; i++) {
+      if ((i % 4 === 0) === major) line(i * step, minY, i * step, maxY)
+    }
+    for (let i = yStart; i <= yEnd; i++) {
+      if ((i % 4 === 0) === major) line(minX, i * step, maxX, i * step)
+    }
+    context.strokeStyle = major ? 'rgba(153,179,205,.18)' : 'rgba(153,179,205,.065)'
+    context.lineWidth = (major ? .82 : .65) * dpr
+    context.stroke()
+  }
+}
+
+export function createOdinView(canvas, metadata, buffer, showMarker, showReference = () => {}) {
   const count = metadata.pointCount
   if (!Number.isSafeInteger(count) || count < 1 || buffer.byteLength !== count * RECORD_BYTES) {
     throw new Error('点云文件长度与地图描述不一致')
   }
-  const context = canvas.getContext('2d', { alpha: false })
+  const context = canvas.getContext('2d')
   if (!context) throw new Error('浏览器未能创建点云画布')
 
   // 前十二字节为小端 XYZ，后四字节为 RGB 和填充。原始点和颜色仅在加载时解码一次。
@@ -49,7 +92,8 @@ export function createOdinView(canvas, metadata, buffer, showMarker) {
     xy += dx * (y - meanY)
     yy += dy * (y - meanY)
   }
-  const homeYaw = Math.atan2(2 * xy, xx - yy) / 2
+  // 视线在主轴方向基础上略偏转，便于观察走廊两侧的深度差。
+  const homeYaw = Math.atan2(2 * xy, xx - yy) / 2 - .077
   let yaw, elevation, pivotX, pivotY, pivotZ, unitsWide, unitsHigh
   let zoom = 1, panX = 0, panY = 0, frame = 0
   let image, rgba, depth
@@ -123,7 +167,7 @@ export function createOdinView(canvas, metadata, buffer, showMarker) {
       rgba = new Uint32Array(image.data.buffer)
       depth = new Float32Array(width * height)
     }
-    rgba.fill(background)
+    rgba.fill(0)
     depth.fill(-Infinity)
     const scale = .90 * Math.min(width / unitsWide, height / unitsHigh) * zoom
     const centerX = width / 2 + panX * dpr, centerY = height / 2 + panY * dpr
@@ -152,6 +196,26 @@ export function createOdinView(canvas, metadata, buffer, showMarker) {
       }
     }
     context.putImageData(image, 0, 0)
+    // 透明像素露出底层地格，采集点保留原始 RGB。采用反向合成，不需要在每次拖动时读回整张画布。
+    context.save()
+    context.globalCompositeOperation = 'destination-over'
+    if (Math.abs(se) >= .015) {
+      const grid = new DOMMatrix([scale * cy, scale * se * sy, scale * sy, -scale * se * cy,
+        pixelX(-pivotX, -pivotY), pixelY(-pivotX, -pivotY, metadata.viewBounds.min[2] - pivotZ)])
+      // 随缩放成倍切换地格间距，主线每四格一次；网格锚在地图原点，不会随平移滑动。
+      const step = 2.5 * 2 ** Math.ceil(Math.log2(18 * dpr / (2.5 * scale * Math.abs(se))))
+      drawGroundGrid(context, dpr, grid, step)
+    }
+    context.restore()
+    // 坐标三轴取相机旋转矩阵在屏幕上的分量，与点云及位姿箭头同步旋转。
+    showReference({
+      scale: scaleBar(scale / dpr),
+      axes: [
+        { label: 'X', x: cy, y: se * sy, color: '#cf9690' },
+        { label: 'Y', x: sy, y: -se * cy, color: '#9bbda7' },
+        { label: 'Z', x: 0, y: -ce, color: '#a5bee8' },
+      ],
+    })
     projectSensor()
   }
 

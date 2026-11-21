@@ -1,189 +1,84 @@
-/* 壳层用暖灰纸面和靛蓝区分导航、内容与选中状态，维护台单独沿用暗色遥测主题。 */
+/* 顶部保留固定的导航高度，主内容独占下方画布，两端内边距与驾驶舱对齐。 */
 .portal {
-  --rail-width: 208px;
-  --rail-bg: #232b4a;
-  --rail-text: #f5f6ff;
-  --rail-muted: #b6c1e3;
-  --rail-line: #414c6d;
-  --rail-hover: #323e62;
-  --rail-selected: #465bc1;
-  --paper: #f6f5f3;
-  --ink: #252943;
-  --action: #4655ad;
-  --portal-muted: #606175;
-  --portal-line: #dcdbe1;
-  color-scheme: light;
-  display: grid;
-  grid-template-columns: var(--rail-width) minmax(0, 1fr);
+  --portal-bar-height: 57px;
+  --paper: #f2f3f2;
+  --ink: #17283b;
+  --action: #325583;
+  --portal-muted: #536477;
+  --portal-line: #cdd3d7;
   min-height: 100vh;
+  color-scheme: light;
   color: var(--ink);
   background: var(--paper);
 }
 
-.portal a:focus-visible, .portal button:focus-visible {
-  outline: 3px solid #5967c8;
-  outline-offset: 2px;
-}
-.portal-sidebar :is(a, button):focus-visible { outline-color: #c8d7ff; }
+/* 页面底色扩展到整个视口，短页和尚在加载的地图底部也保持同色。 */
+.portal.is-cockpit { color-scheme: dark; background: #121417; }
+
+.portal a:focus-visible, .portal button:focus-visible { outline: 2px solid #4470a8; outline-offset: 2px; }
 .portal-skip {
-  position: fixed;
-  z-index: 200;
-  inset: -80px auto auto 12px;
-  padding: 10px 16px;
-  border-radius: 6px;
-  background: #fff;
-  color: var(--action);
+  position: fixed; inset: -80px auto auto 12px; z-index: 200;
+  padding: 10px 16px; border-radius: 4px; background: #fff; color: var(--action);
 }
 .portal-skip:focus { top: 6px; }
-
-/* 桌面侧栏的标识、菜单和工作区型号分三段，菜单可单独滚动。 */
-.portal-sidebar {
-  position: sticky;
-  top: 0;
-  z-index: 12;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  height: 100vh;
-  height: 100dvh;
-  border-right: 1px solid var(--rail-line);
-  background: var(--rail-bg);
-  color: var(--rail-text);
+.portal-bar {
+  position: relative; z-index: 12;
+  display: flex; align-items: center; gap: clamp(16px, 3vw, 41px);
+  height: var(--portal-bar-height); padding: 0 clamp(16px, 2.5vw, 36px);
+  font-family: "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  color-scheme: dark;
+  border-bottom: 1px solid #44484b; background: #1b1d20; color: #e0e2dc;
 }
+.portal-bar a:focus-visible, .portal-bar button:focus-visible { outline-color: #f3986d; }
 .portal-brand {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 10px;
-  padding: 24px 20px 22px;
-  color: var(--rail-text);
-  text-decoration: none;
+  display: inline-flex; flex: none; align-items: center; gap: 12px; white-space: nowrap;
+  color: inherit; text-decoration: none;
 }
+.portal-brand strong { font-size: 16px; font-weight: 750; letter-spacing: .04em; }
 .portal-mark {
-  display: grid;
-  place-items: center;
-  width: 37px;
-  height: 37px;
-  flex: none;
-  border-radius: 8px;
-  background: #cdd7ff;
-  color: #283157;
+  display: grid; place-items: center; width: 31px; height: 28px;
+  clip-path: polygon(0 0, 100% 0, 100% 75%, 77% 100%, 0 100%);
+  background: #e04f16; color: #121417;
 }
-.portal-brand-name strong, .portal-brand-name small, .portal-foot strong, .portal-foot small { display: block; }
-.portal-brand-name strong { font-size: 17px; line-height: 1.25; font-weight: 750; white-space: nowrap; }
-.portal-brand-name small { margin-top: 3px; color: var(--rail-muted); font-size: 11px; line-height: 1.4; }
-.portal-nav-list {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  overscroll-behavior: contain;
-  scrollbar-width: thin;
-  scrollbar-color: #596587 transparent;
-  padding: 4px 12px 18px;
+.portal-nav-list { align-self: stretch; display: flex; gap: clamp(13px, 1.9vw, 27px); }
+.portal-nav-group { position: relative; display: flex; }
+.portal-nav-tab {
+  position: relative; display: flex; align-items: center; white-space: nowrap;
+  padding: 0; border: 0; background: transparent; color: #b0b5b6;
+  font-size: 13px; text-decoration: none; line-height: 1.4;
 }
-.portal-nav-label {
-  margin: 8px 10px 9px;
-  color: var(--rail-muted);
-  font-size: 11px;
-  font-weight: 580;
-  letter-spacing: .07em;
+.portal-nav-tab:hover, .portal-nav-tab[aria-expanded=true] { color: #fff; }
+.portal-nav-tab[aria-current=page], .portal-nav-tab.is-current { color: #f0eee7; font-weight: 700; }
+.portal-nav-tab.is-current::after, .portal-nav-tab[aria-current=page]::after {
+  content: ""; position: absolute; inset: auto 0 -1px; height: 3px; background: #e04f16;
 }
-.portal-nav-rule { margin-top: 16px; border-top: 1px solid var(--rail-line); padding-top: 16px; }
-.portal-main-link, .portal-group {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  min-height: 39px;
-  border: 0;
-  border-radius: 6px;
-  padding: 6px 11px;
-  text-align: left;
-  font-size: 13px;
-  font-weight: 560;
-  color: #dce3fa;
-  background: transparent;
-  text-decoration: none;
-}
-.portal-group { margin-top: 2px; }
-.portal-group span { flex: 1; }
-.portal-main-link svg, .portal-group svg { color: var(--rail-muted); }
-.portal-chevron { transition: transform .14s ease; }
-.portal-chevron.expanded { transform: rotate(90deg); }
-.portal-main-link:hover, .portal-group:hover, .portal-subnav a:hover { background: var(--rail-hover); color: var(--rail-text); }
-.portal-main-link[aria-current=page], .portal-subnav a[aria-current=page] {
-  background: var(--rail-selected);
-  color: #fff;
-}
-.portal-main-link[aria-current=page] svg { color: #e0e5ff; }
+.portal-nav-tab:focus-visible { outline-offset: -2px; }
 .portal-subnav {
-  margin: 3px 0 5px 19px;
-  border-left: 1px solid var(--rail-line);
-  padding-left: 10px;
+  position: absolute; z-index: 2; top: 100%; left: -12px; min-width: 152px;
+  padding: 5px; background: #24282c; color: #d9dddc; border: 1px solid #565c60;
+  box-shadow: 0 6px 14px #10121444;
 }
 .portal-subnav a {
-  display: block;
-  padding: 0 12px;
-  border-radius: 5px;
-  color: var(--rail-muted);
-  font-size: 12px;
-  line-height: 32px;
-  text-decoration: none;
+  display: flex; align-items: center; min-height: 37px; padding: 5px 12px;
+  color: inherit; font-size: 13px; text-decoration: none;
 }
-.portal-foot {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 0 18px;
-  padding: 14px 1px;
-  border-top: 1px solid var(--rail-line);
+.portal-subnav a:hover, .portal-subnav a[aria-current=page] { color: #f2eee7; background: #373c40; }
+.portal-subnav a:focus-visible { outline-color: #f3986d; outline-offset: -2px; }
+.portal-chevron, .portal-mobile-toggle, .portal-nav-close, .portal-scrim { display: none; }
+.portal-link-state {
+  display: flex; align-items: center; gap: 19px; flex: none; margin-left: auto;
+  color: #c1c6c5; font-size: 12px; line-height: 1.4; letter-spacing: .02em;
 }
-.portal-foot-icon {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 6px;
-  border: 1px solid var(--rail-line);
-  color: var(--rail-muted);
-  background: var(--rail-hover);
-}
-.portal-foot strong { font-size: 12px; font-weight: 600; }
-.portal-foot small { margin-top: 3px; color: var(--rail-muted); font: 11px var(--mono); }
-
+.portal-indicator { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.portal-indicator + .portal-indicator { border-left: 1px solid #4a4f54; padding-left: 18px; }
+/* 灯形与文字配合表达连接结果；空心灯表示掉线，未取得状态时使用虚线环。 */
+.portal-indicator i { flex: none; width: 8px; height: 8px; border: 1px solid #a3a7aa; border-radius: 50%; }
+.portal-indicator.is-online i { background: #3b7a9e; border-color: #91b4c6; }
+.portal-indicator.is-unknown i { border-style: dashed; }
+.portal-indicator.is-simulation i { background: #b8c0c8; border-color: #b8c0c8; border-radius: 0; }
 .portal-work, .portal-content { min-width: 0; }
 .portal-content:focus { outline: none; }
-.portal-bar {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  min-height: 50px;
-  padding: 0 clamp(16px, 2.4vw, 36px);
-  border-bottom: 1px solid var(--portal-line);
-  color: var(--portal-muted);
-  background: #fff;
-  font-size: 12px;
-}
-.portal-crumb, .portal-time, .portal-link-state { display: flex; align-items: center; }
-.portal-crumb { gap: 9px; margin-right: auto; min-width: 0; white-space: nowrap; }
-.portal-crumb strong { color: var(--ink); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
-.portal-crumb svg { color: #8e8e9a; }
-.portal-time { gap: 10px; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.portal-time b { font: 600 12px var(--mono); color: var(--ink); }
-.portal-link-state {
-  flex: none;
-  gap: 7px;
-  min-height: 26px;
-  padding: 3px 10px;
-  border-radius: 5px;
-  color: #795520;
-  background: #f6eedc;
-  font-size: 11px;
-  font-weight: 590;
-  white-space: nowrap;
-}
-.portal-link-state i { width: 6px; height: 6px; background: currentColor; border-radius: 50%; }
-.portal-link-state.online { color: #364588; background: #e9ecfb; }
 .portal-stop-status { padding: 10px 22px; color: #573c1b; background: #fff0cb; font-size: 13px; }
 .portal-stop-status a { color: inherit; margin-left: 10px; }
 
@@ -229,10 +124,9 @@
 }
 .portal-back:hover { text-decoration: underline; text-underline-offset: 3px; }
 
-.portal-mobile-toggle, .portal-nav-close, .portal-scrim { display: none; }
 /* 维护页按工作区可用宽度换行，给地图及方向键保留最小显示宽度。 */
 .portal .maintenance-shell {
-  min-height: calc(100vh - 50px);
+  min-height: calc(100vh - var(--portal-bar-height));
   max-width: none;
   padding: 0 clamp(14px, 2vw, 26px) 24px;
   color-scheme: dark;
@@ -243,48 +137,43 @@
   .maintenance-shell .dashboard { grid-template-columns: minmax(195px, 225px) minmax(0, 1fr); }
   .maintenance-shell .telemetry-stack { grid-column: 1 / -1; grid-template: auto / repeat(2, minmax(0, 1fr)); }
 }
-@media (min-width: 761px) and (max-width: 1050px) {
-  .portal { --rail-width: 176px; }
-  .portal-brand { padding-inline: 13px; gap: 8px; }
-  .portal-nav-list { padding-inline: 8px; }
-}
-@media (max-width: 760px) {
-  .portal { display: block; }
-  .portal-sidebar {
-    position: fixed;
-    left: 0;
-    bottom: 0;
-    z-index: 51;
-    width: 236px;
-    max-width: 85vw;
-    visibility: hidden;
-    transform: translateX(-100%);
-  }
-  .portal-sidebar.is-open {
-    visibility: visible;
-    transform: translateX(0);
-    box-shadow: 6px 0 25px #25294329;
-  }
+
+/* 窄屏把同一组导航收进抽屉，保留键盘浏览的顺序和顶栏两端的连接状态。 */
+@media (max-width: 860px) {
+  .portal-bar { gap: 12px; padding-inline: 16px; }
   .portal-mobile-toggle, .portal-nav-close {
-    display: grid;
-    place-items: center;
-    flex: none;
-    width: 40px;
-    height: 40px;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--ink);
+    display: grid; place-items: center; flex: none; width: 44px; height: 44px;
+    padding: 0; border: 0; border-radius: 4px; background: transparent; color: #ecf2ff;
   }
-  .portal-mobile-toggle { margin-left: -7px; }
-  .portal-nav-close { position: absolute; right: 2px; top: 4px; color: var(--rail-text); }
-  .portal-scrim { display: block; position: fixed; inset: 0; z-index: 50; background: #21253f94; border: 0; }
-  .portal-bar { gap: 8px; padding: 0 14px; }
-  .portal-time { display: none; }
-  .portal-crumb { gap: 5px; }
-  .portal-main-link, .portal-group { min-height: 42px; }
-  .portal-subnav a { line-height: 38px; }
+  .portal-mobile-toggle { margin-left: -8px; }
+  .portal-nav-close { margin-left: auto; }
+  .portal-scrim { position: fixed; z-index: 1; inset: 0; display: block; border: 0; background: #101214ad; }
+  .portal-nav-list {
+    position: fixed; z-index: 2; inset: 0 auto 0 0; display: none; flex-direction: column;
+    gap: 2px; width: min(285px, 86vw); overflow: auto; overscroll-behavior: contain;
+    padding: 10px 12px 20px; background: #1b1d20;
+  }
+  .portal-nav-list.is-open { display: flex; }
+  .portal-nav-group { display: block; }
+  .portal-nav-tab { width: 100%; min-height: 44px; padding: 4px 12px; border-radius: 4px; font-size: 14px; }
+  .portal-nav-tab[aria-current=page], .portal-nav-tab.is-current { background: #383b3e; }
+  .portal-nav-tab.is-current::after, .portal-nav-tab[aria-current=page]::after { display: none; }
+  .portal-chevron { display: block; margin-left: auto; }
+  .portal-nav-tab[aria-expanded=true] .portal-chevron { transform: rotate(90deg); }
+  .portal-subnav {
+    position: static; margin: 2px 0 5px 20px; padding: 0 6px; border: 0; border-left: 1px solid #5e6469;
+    border-radius: 0; background: transparent; color: #d9dddc; box-shadow: none;
+  }
+  .portal-subnav a { min-height: 44px; }
+  .portal-subnav a:hover, .portal-subnav a[aria-current=page] { background: #383b3e; color: #fff; }
 }
-@media (prefers-reduced-motion: reduce) {
-  .portal-chevron { transition: none; }
+@media (max-width: 570px) {
+  .portal-bar { gap: 6px; padding-inline: 12px; }
+  .portal-brand { gap: 7px; }
+  .portal-brand strong { font-size: 14px; letter-spacing: 0; }
+  .portal-mark { width: 28px; height: 28px; }
+  .portal-mark svg { width: 19px; height: 19px; }
+  .portal-link-state { flex-direction: column; align-items: flex-start; gap: 2px; font-size: 11px; }
+  .portal-indicator + .portal-indicator { border: 0; padding: 0; }
+  .portal-indicator i { width: 6px; height: 6px; }
 }
