@@ -15,7 +15,7 @@
 
 Humble 官方二进制目标包含 Ubuntu 22.04 的 amd64/arm64。本机宿主是 24.04，故候选方案使用容器，不直接混装 Jammy 软件源。若 M0 确认 A2 采用其他受支持组合，则同步调整本机镜像、CI 和依赖锁定；不能把本机 Jazzy 构建成功作为 Humble 已验证。[ROS 官方安装文档源码](https://github.com/ros2/ros2_documentation/blob/humble/source/Installation/Ubuntu-Install-Debs.rst)
 
-任务、存储、公共接口、平台和 bringup 已有五个可构建 ROS 2 包。导航目录新增了独立的离线规划工具，实机执行包待实现。正式依赖待 M0 核实后登记，本机试验依赖单独记录。[实现进度](implementation-status.md) · [建图候选清单](../third_party/mapping-candidate.repos)
+任务、存储、公共接口、平台和 bringup 已有五个可构建 ROS 2 包。导航目录包括离线规划工具与 PC2 单点动作客户端。单点目标的提交、反馈、取消和重试已在开发机联调，底盘执行与停车待实机验证。正式依赖待 M0 核实后登记，本机试验依赖单独记录。[实现进度](implementation-status.md) · [建图候选清单](../third_party/mapping-candidate.repos)
 
 本机已完成官方 DLIO `feature/ros2` 固定提交的 Jazzy/x86_64 基线构建。真实数据回放使用单独构建的试验 overlay，启动时记录源码补丁、参数、回放方式和输出位置。A2 的正式建图依赖与 ARM64 构建待验证。[候选版本与重建](mapping-readiness.md) · [最新回放结果](implementation-status.md)
 
@@ -91,6 +91,25 @@ colcon test-result --verbose
 2. 确认驱动已收到重定位变换，且终端持续刷新同一设备时刻的里程计与地图变换。驱动发布的两个变换分别把 IMU 和地图坐标变换到 `odom`。计算 `T_map_imu = inverse(T_odom_map) × T_odom_imu`，显示 ODIN1 IMU 原点的 X、Y、Z（米）。航向取 IMU 的 +X 轴在地图 XY 平面上的投影，从地图 +X 向 +Y 为正（度）。
 3. 现场人员用原厂遥控器行走，在两个已知点按同一传感器参考位置对准、停稳并标记。此轮在每次标记后采集约 0.8 秒，取窗口中间帧。复核时计算水平直线间距和带符号的航向变化。有独立测量的参考位置或朝向时，逐点计算误差。厂商 v0.14.5 在模式 2 收到首条重定位 TF 时就会打印 `relocalization success!`。[驱动回调](https://github.com/manifoldsdk/odin_ros_driver/blob/9487890acd648f1c7647576d1ad2b04dd7fd3677/src/host_sdk_sample.cpp#L1327)
 4. 两点记录完成后恢复模式 0，核对服务回执、停流结果和驱动退出码。测点坐标、轨迹和设备日志保存在受控目录。[本轮实测记录](implementation-status.md#odin1-内部建图与固件交接)
+
+### 3.3 巡检与单点导航的开发机复测
+
+在开发机仓库根目录打开 Bash。以下 20 项测试使用 ROS 2 Jazzy、Fast DDS、本机回环和合成动作服务，覆盖两点巡检状态机、双端 HTTP、单点动作的成功与取消、ODIN1 机身位姿桥以及导航启动时的话题重映射。域 196 供本机独立复测使用。
+
+```bash
+source /opt/ros/jazzy/setup.bash
+export ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=196 RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+export A2_SINGLE_GOAL_ROS_TEST=1 A2_RUN_LOCAL_NAV2_LINK=1
+export PYTHONPATH="$PWD:$PWD/scripts:$PWD/src/a2_gateway:$PWD/src/a2_navigation${PYTHONPATH:+:$PYTHONPATH}"
+python3 -m unittest \
+  src/a2_gateway/test/test_patrol.py \
+  src/a2_gateway/test/test_single_goal_link.py \
+  src/a2_navigation/test/test_single_goal_ros.py \
+  scripts/test/test_publish_odin1_navigation_pose.py \
+  scripts/test/test_pc2_single_goal_nav2_launch.py
+```
+
+浏览器复测两点巡检时，在模拟角色中下发停留时间不同的两个目标，比对事件表中每点的「已停稳」和「停留结束」时刻。单点导航的现场交接从校验两端离线包和 PC2 静止联调开始，经过候选速度、取消与停车检查后，再进行实机到点验收。[两点模拟操作](a2-operator-console.md#两点模拟巡检) · [PC2 单点导航](pc2-single-goal.md)
 
 ## 4. mock、回放和硬件隔离
 

@@ -42,16 +42,16 @@ jobs:
         env:
           PYTHONPATH: src/a2_bringup
         run: python3 -m unittest discover -s src/a2_bringup/test -v
-      - name: Test offline map goal planning
+      - name: Test offline map planning and single-goal navigation
         env:
           PYTHONPATH: src/a2_navigation
-        run: python3 -m unittest discover -s src/a2_navigation/test -v
+        run: /usr/bin/python3 -m unittest discover -s src/a2_navigation/test -v
       - name: Test maintenance motion arbitration
         env:
           PYTHONPATH: src/a2_safety
         run: python3 -m unittest discover -s src/a2_safety/test -v
-      - name: Test maintenance console over loopback
+      - name: Test patrol and single-goal gateway over loopback
         env:
-          PYTHONPATH: src/a2_gateway
-        run: python3 -m unittest discover -s src/a2_gateway/test -v
+          PYTHONPATH: src/a2_gateway:src/a2_navigation
+        run: /usr/bin/python3 -m unittest discover -s src/a2_gateway/test -v
       # These checks do not grant robot motion authorization.

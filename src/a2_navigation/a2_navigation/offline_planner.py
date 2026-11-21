@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 MAX_CELLS = 4_000_000
-UNKNOWN_CELL = 255  # The byte representation of -1 in ROS int8[] data.
+UNKNOWN_CELL = 255  # ROS int8[] 数据中 -1 的字节表示。
 PGM_WHITESPACE = b" \t\n\r\v\f"
 DIAGONAL_COST = math.sqrt(2.0)
 NEIGHBORS = (
@@ -98,6 +98,18 @@ def read_pgm(content):
     return width, height, maximum, pixels
 
 
+def world_to_cell(point, origin, resolution, width, height):
+    """用栅格自身的原点和朝向换算地图坐标，规划器和单点入口共用边界判定。"""
+    x, y, yaw = origin
+    dx, dy = point[0] - x, point[1] - y
+    cosine, sine = math.cos(yaw), math.sin(yaw)
+    local_x = (cosine * dx + sine * dy) / resolution
+    local_y = (-sine * dx + cosine * dy) / resolution
+    if not (0 <= local_x < width and 0 <= local_y < height):
+        return None
+    return math.floor(local_x), math.floor(local_y)
+
+
 @dataclass(frozen=True)
 class OccupancyMap:
     width: int
@@ -113,14 +125,7 @@ class OccupancyMap:
         return 0 <= x < self.width and 0 <= y < self.height
 
     def world_to_cell(self, point: Point) -> Cell | None:
-        x, y, yaw = self.origin
-        dx, dy = point[0] - x, point[1] - y
-        cosine, sine = math.cos(yaw), math.sin(yaw)
-        local_x = (cosine * dx + sine * dy) / self.resolution
-        local_y = (-sine * dx + cosine * dy) / self.resolution
-        if not (0 <= local_x < self.width and 0 <= local_y < self.height):
-            return None
-        return math.floor(local_x), math.floor(local_y)
+        return world_to_cell(point, self.origin, self.resolution, self.width, self.height)
 
     def cell_center(self, cell: Cell) -> Point:
         x, y, yaw = self.origin
@@ -214,9 +219,9 @@ def traversable_rows(grid: OccupancyMap, radius_m: float) -> tuple[int, ...]:
     if not interior or grid.height <= 2 * edge:
         return (0,) * grid.height
     forbidden = [0] * grid.height
-    # For square cells, center indices that differ by 1 still touch. For each
-    # vertical displacement compute the maximum horizontal displacement whose
-    # two cell squares are within radius_m.
+    # 对于正方形栅格，中心索引相差 1 的栅格仍相接。
+    # 对每个纵向偏移，计算两栅格间距不超过 radius_m 时
+    # 允许的最大横向偏移。
     for dy in range(edge + 1):
         separation = max(0, dy - 1)
         dx = math.floor(math.sqrt(max(0, radius_cells ** 2 - separation ** 2))) + 1

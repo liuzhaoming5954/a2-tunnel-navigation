@@ -6,6 +6,8 @@ import secrets
 import threading
 import time
 
+from .patrol import Patrol, parse_point
+
 
 LINEAR_LIMIT_MPS = 0.45
 ANGULAR_LIMIT_RADPS = 1.20
@@ -47,7 +49,7 @@ def _base_grid():
                 cells[yy * WIDTH + xx] = 100
     for x, y in ((42, 33), (43, 33), (44, 33), (28, 51), (73, 43), (74, 43)):
         cells[y * WIDTH + x] = 100
-    # Parked equipment cart on the remote spur.
+    # 远端支路上停放的设备推车。
     for y in range(58, 61):
         for x in range(83, 86):
             cells[y * WIDTH + x] = 100
@@ -78,11 +80,14 @@ class Lease:
 class Simulator:
     """Integrate simulated velocities and enforce lease/deadman independently of HTTP."""
 
-    def __init__(self):
+    def __init__(self, *, clock=time.monotonic):
         self._lock = threading.Lock()
         self._closed = threading.Event()
-        self._last_tick = time.monotonic()
+        # 控制租约、运动积分和点位停留共用单调时钟，测试可逐周期推进同一模型。
+        self._clock = clock
+        self._last_tick = self._clock()
         self._lease = None
+        self._patrol = Patrol()
         self._reason = "idle"
         self._x, self._y, self._yaw = -4.85, -1.1, 0.0
         self._battery = 86.0
@@ -99,6 +104,8 @@ class Simulator:
     def close(self):
         self._closed.set()
         with self._lock:
+            if self._patrol.owns_robot:
+                self._patrol.fail("simulator_closed", self._clock())
             self._revoke("simulator_closed")
         self._worker.join()
 
@@ -109,6 +116,10 @@ class Simulator:
         self._reason = reason
 
     def _can_occupy(self, x, y):
+        # 先拒绝中心落在地图外的输入，再把合法坐标换算为有限的栅格下标。
+        if not (ORIGIN_X_M <= x < ORIGIN_X_M + WIDTH * RESOLUTION_M and
+                ORIGIN_Y_M <= y < ORIGIN_Y_M + HEIGHT * RESOLUTION_M):
+            return False
         radius = ROBOT_RADIUS_M / RESOLUTION_M
         column = (x - ORIGIN_X_M) / RESOLUTION_M
         row = (y - ORIGIN_Y_M) / RESOLUTION_M
@@ -142,7 +153,21 @@ class Simulator:
         self._battery = max(0.0, self._battery - elapsed * (0.0008 + 0.006 * load))
 
     def _advance(self):
-        now = time.monotonic()
+        now = self._clock()
+        if self._patrol.owns_robot:
+            # 同一机身、同一互斥锁。进程被调度挂起后不补发整个间隙的移动量。
+            elapsed = max(0.0, min(now - self._last_tick, TICK_SECONDS * 2))
+            self._request_linear, self._request_angular = self._patrol.update(
+                now, self._x, self._y, self._yaw, self._linear, self._angular,
+                LINEAR_LIMIT_MPS, ANGULAR_LIMIT_RADPS)
+            self._step(elapsed)
+            if self._reason == "obstacle":
+                self._patrol.fail("obstacle", now)
+                self._revoke("obstacle")
+            else:
+                self._reason = "patrol_busy" if self._patrol.owns_robot else "idle"
+            self._last_tick = now
+            return now
         if self._lease is None:
             self._last_tick = now
             return now
@@ -206,9 +231,32 @@ class Simulator:
     def map_data(self):
         return {**self._map_metadata(), "cells": list(BASE_GRID)}
 
+    def submit_patrol_point(self, payload):
+        try:
+            mission, point = parse_point(payload)
+        except ValueError:
+            return _error(400, "invalid_patrol_point")
+        with self._lock:
+            now = self._advance()
+            if self._closed.is_set():
+                return _error(503, "simulator_closed")
+            if self._lease is not None:
+                return _error(409, "session_busy")
+            if not self._can_occupy(point.x_m, point.y_m):
+                return _error(422, "invalid_patrol_target")
+            reason = self._patrol.accept(mission, point, now)
+            if reason:
+                return _error(409, reason)
+            return 200, {"ok": True, "patrol": self._patrol.snapshot(now)}
+
+    def patrol_state(self):
+        with self._lock:
+            now = self._advance()
+            return self._patrol.snapshot(now)
+
     def _control_state(self):
         return {
-            "available": not self._closed.is_set(),
+            "available": not self._closed.is_set() and not self._patrol.owns_robot,
             "armed": self._lease is not None,
             "reason": self._reason,
             "limits": {"linear_mps": LINEAR_LIMIT_MPS, "angular_radps": ANGULAR_LIMIT_RADPS},
@@ -226,6 +274,8 @@ class Simulator:
             now = self._advance()
             if self._closed.is_set():
                 return _error(503, "simulator_closed")
+            if self._patrol.owns_robot:
+                return _error(409, "patrol_busy")
             if self._lease is not None:
                 return _error(409, "session_busy")
             self._lease = Lease(secrets.token_urlsafe(24), now + LEASE_SECONDS)

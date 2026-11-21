@@ -194,7 +194,7 @@ function draw() {
   const context = canvas.value?.getContext('2d')
   if (!context) return
   context.setTransform(ratio, 0, 0, ratio, 0, 0)
-  context.fillStyle = '#0b1726'
+  context.fillStyle = '#151b30'
   context.fillRect(0, 0, view.width, view.height)
   drawRaster(context)
   drawWorldGrid(context)

@@ -30,12 +30,12 @@
 | `a2_description` 机身模型与外参 | [模块说明](src/a2_description/README.md)，URDF/Xacro 和静态 TF 配置待实现。 |
 | `a2_platform` 平台状态 | `ros2 run a2_platform readonly_node` → [readonly_node.cpp](src/a2_platform/src/readonly_node.cpp)，Unitree 状态适配见 [unitree_state_source.cpp](src/a2_platform/src/unitree_state_source.cpp)。 |
 | `a2_localization` 定位 | [body_pose.py](src/a2_localization/a2_localization/body_pose.py) 换算机身位姿，[publish_a2_localization.py](scripts/publish_a2_localization.py) 接入 DLIO 只读定位。 |
-| `a2_navigation` 导航 | [plan_navigation_goal.py](scripts/plan_navigation_goal.py) → [offline_planner.py](src/a2_navigation/a2_navigation/offline_planner.py) 做离线规划，[preview_navigation_goal.py](scripts/preview_navigation_goal.py) → [straight_preview.py](src/a2_navigation/a2_navigation/straight_preview.py) 做指令预演。 |
+| `a2_navigation` 导航 | [离线规划](scripts/plan_navigation_goal.py)和[直线指令预演](scripts/preview_navigation_goal.py)用于开发机检查。PC2 单点导航由 [single_goal.py](src/a2_navigation/a2_navigation/single_goal.py) 管理目标收据，[nav2_goal_client.py](src/a2_navigation/a2_navigation/nav2_goal_client.py) 对接 Nav2 动作。 |
 | `a2_safety` 安全 | [maintenance_arbiter.py](src/a2_safety/maintenance_arbiter.py) 的 `MaintenanceArbiter` 为原型，实机仲裁服务待集成。 |
 | `a2_mission` 任务 | `ros2 run a2_mission mission_node` → [ros_node.py](src/a2_mission/a2_mission/ros_node.py) 启动 mock 节点，[controller.py](src/a2_mission/a2_mission/controller.py) 是任务控制器，[demo.py](src/a2_mission/a2_mission/demo.py) 是 `a2-mission-demo` 的入口。 |
 | `a2_payloads` 巡检载荷 | [模块说明](src/a2_payloads/README.md)，云台和气体传感器接入待实现。 |
 | `a2_storage` 存储 | [journal.py](src/a2_storage/a2_storage/journal.py) 的 `SQLiteJournal` 是 SQLite 持久化入口，由任务模块调用。 |
-| `a2_gateway` 维护上位机 | [run_a2_console.py](scripts/run_a2_console.py) → [server.py](src/a2_gateway/a2_gateway/server.py)。Vue 前端从 [main.js](src/a2_gateway/web/src/main.js) 进入 [App.vue](src/a2_gateway/web/src/App.vue)。[start_a2_console_readonly.sh](scripts/start_a2_console_readonly.sh) 启动地图、平台状态和只读界面，详见[操作说明](docs/a2-operator-console.md)。 |
+| `a2_gateway` 维护上位机 | [run_a2_console.py](scripts/run_a2_console.py) 启动上位机、PC2 或模拟器。上位机提供驾驶舱，模拟器用 [patrol.py](src/a2_gateway/a2_gateway/patrol.py) 执行两点巡检。PC2 默认提供只读接口，显式启用单点导航后通过 [pc2_goal.py](src/a2_gateway/a2_gateway/pc2_goal.py) 接入导航。[上位机操作](docs/a2-operator-console.md) · [单点导航部署](docs/pc2-single-goal.md) |
 | `a2_bringup` 系统启动 | `ros2 launch a2_bringup mock.launch.py` → [mock.launch.py](src/a2_bringup/launch/mock.launch.py)。运行模式约定见 [profiles.json](config/examples/profiles.json)。 |
 | `a2_test_support` 测试支持 | [模块说明](src/a2_test_support/README.md)。独立包待实现，现有任务和平台验证入口为 [mission_ros_smoke.py](scripts/mission_ros_smoke.py) 和 [readonly_smoke.py](scripts/readonly_smoke.py)。 |
 

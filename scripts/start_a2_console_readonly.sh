@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${A2_MAP_YAML:?Set A2_MAP_YAML to the trinary map YAML path}"
 : "${A2_SDK_NIC:?Set A2_SDK_NIC to the Unitree SDK network interface}"
 : "${A2_SDK_DOMAIN_ID:?Set A2_SDK_DOMAIN_ID to the Unitree DDS domain}"
 : "${A2_ROBOT_ID:?Set A2_ROBOT_ID to the robot identifier}"
@@ -18,8 +17,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-python3 "$root/scripts/publish_a2_map.py" --map "$A2_MAP_YAML" &
-children+=("$!")
+# SDK 读取底盘状态，ROS 域按现场配置交给只读接口。地图与驾驶舱由上位机提供。
 python3 "$root/scripts/publish_a2_platform_state.py" \
   --network-interface "$A2_SDK_NIC" --unitree-domain-id "$A2_SDK_DOMAIN_ID" \
   --robot-id "$A2_ROBOT_ID" &
@@ -29,10 +27,7 @@ odin_args=()
 if [[ -n "${A2_ODIN1_POSE_FILE:-}" ]]; then
   odin_args+=(--odin1-pose-file "$A2_ODIN1_POSE_FILE")
 fi
-if [[ -n "${A2_ODIN1_MAP_DIR:-}" ]]; then
-  odin_args+=(--odin1-map-dir "$A2_ODIN1_MAP_DIR")
-fi
-python3 "$root/scripts/run_a2_console.py" --ros --host 127.0.0.1 \
+python3 "$root/scripts/run_a2_console.py" --role pc2 --host 127.0.0.1 \
   --port "${A2_CONSOLE_PORT:-8765}" "${odin_args[@]}" &
 children+=("$!")
 

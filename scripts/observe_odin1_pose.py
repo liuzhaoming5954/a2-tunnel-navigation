@@ -151,7 +151,11 @@ class Pairs:
         self.last_stamp = stamp
         odom, tf = self.odom[stamp], self.tf[stamp]
         position, yaw = map_pose(odom, tf)
+        # 父帧在前。保留厂商同一设备时刻的两个完整三维变换，供导航域应用机身安装外参。
+        # 网页继续使用原有的传感器位置与航向；这些新增字段不改变它的坐标定义。
         return dict(stamp_ns=stamp, position_m=position, yaw_rad=yaw,
+                    T_odom_from_imu=dict(translation_m=odom.p, quaternion_xyzw=odom.q),
+                    T_odom_from_map=dict(translation_m=tf.p, quaternion_xyzw=tf.q),
                     received_monotonic_ns=min(odom.receipt, tf.receipt))
 
 
@@ -205,6 +209,8 @@ def collect(args, log, sha, md5):
 
     rclpy.init(args=[])
     node = rclpy.create_node("a2_odin1_sensor_display", start_parameter_services=False)
+    # 该进程使用默认 ROS 初始化，不覆盖环境域。记录域号，使导航桥能拒绝重复在设备域发 TF。
+    source_domain = int(os.environ.get("ROS_DOMAIN_ID", "0"))
     qos = QoSProfile(depth=8, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.VOLATILE)
     node.create_subscription(Odometry, ODOMETRY, on_odom, qos)
     node.create_subscription(TFMessage, DYNAMIC_TF, on_tf, qos)
@@ -248,7 +254,7 @@ def collect(args, log, sha, md5):
                     status = "live" if now - last_receipt <= MAX_AGE_NS else "stale"
             if pose:
                 write_status(args.output, "live", frame="map", child_frame="imu",
-                             map_sha256=sha, boot_id=boot_id, **pose)
+                             map_sha256=sha, boot_id=boot_id, source_domain_id=source_domain, **pose)
             elif status != last_status:
                 write_status(args.output, status)
             last_status = status

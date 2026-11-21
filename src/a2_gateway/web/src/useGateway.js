@@ -34,7 +34,7 @@ export function describeError(reason) {
   return ERROR_MESSAGES[reason] ?? reason
 }
 
-async function request(path, { body, keepalive = false, timeout = 1800, controller = new AbortController() } = {}) {
+export async function request(path, { body, keepalive = false, timeout = 1800, controller = new AbortController() } = {}) {
   const timer = setTimeout(() => controller.abort(), timeout)
   try {
     const response = await fetch(path, {
@@ -51,7 +51,7 @@ async function request(path, { body, keepalive = false, timeout = 1800, controll
     const data = await response.json().catch(() => null)
     if (!response.ok || !data || data.ok === false || (body !== undefined && data.ok !== true)) {
       const reason = data?.reason ?? `HTTP ${response.status}`
-      throw Object.assign(new Error(describeError(reason)), { reason })
+      throw Object.assign(new Error(describeError(reason)), { reason, status: response.status })
     }
     return data
   } catch (error) {

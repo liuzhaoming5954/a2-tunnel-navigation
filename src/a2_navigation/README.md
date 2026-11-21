@@ -1,6 +1,8 @@
 # a2_navigation
 
-当前提供本机离线目标点规划和直线指令预演。实机固定路线执行、路线进度和桩前对准由后续导航节点负责。
+当前提供离线目标点规划、直线指令预演及 PC2 单点导航接入。单点下发、反馈和取消已在开发机验证，实机到点待测。
+
+机载单点导航入口将上位机目标交给 Nav2 的 `NavigateToPose`。动作收据与 ROS 客户端位于 `a2_navigation/single_goal.py` 和 `a2_navigation/nav2_goal_client.py`，可选启动文件位于 `scripts/pc2_single_goal_nav2.launch.py`。按[PC2 单点导航](../../docs/pc2-single-goal.md)配置导航域、地图、机身定位与上位机。
 
 ## 离线规划
 

@@ -20,11 +20,17 @@ const detail = ref(null)
 // 点云是现场采集的静态地图。遥测模式切换或断线重连时保留操作员选定的视图。
 const mapView = ref('odin')
 const selectedPoint = ref('')
-const sourcePolicy = ref('demo')
+// 上位机首次进入只展示已接入数据；演示入口可默认显示标注来源的业务样例。
+const chosenPolicy = ref(null)
+const sourcePolicy = computed({
+  get: () => chosenPolicy.value ?? (knownMode.value === 'simulator' ? 'demo' : 'gateway'),
+  set: policy => { chosenPolicy.value = policy },
+})
 const knownMode = ref('')
 const reviewedIds = ref([])
 
 const connected = computed(() => props.connection === 'connected')
+const station = computed(() => props.state?.deployment === 'station')
 const online = computed(() => connected.value && props.state?.robot?.online === true)
 const robot = computed(() => props.state?.robot || {})
 // 网关负责底盘遥测有效性；掉线时不把上一帧电量当作实时数据。
@@ -32,11 +38,13 @@ const battery = computed(() => {
   const value = robot.value.battery_percent
   return online.value && Number.isFinite(value) && value >= 0 && value <= 100 ? Math.round(value) : null
 })
-const source = computed(() => ({
+const source = computed(() => station.value ? 'PC2 只读接口' : ({
   simulator: '网关模拟', robot: '实机网关', robot_readonly: '实机只读',
 })[knownMode.value] || '等待网关')
+const gridSource = computed(() => station.value ? '上位机本地栅格' : source.value + ' · 二维地图')
 const robotStatus = computed(() => {
   if (!connected.value) return props.connection === 'connecting' ? '连接中' : '网关离线'
+  if (station.value && !props.state.pc2_connected) return 'PC2 未连接'
   return online.value ? '在线' : '遥测离线'
 })
 const modeName = computed(() => {
@@ -52,6 +60,12 @@ const telemetryTime = computed(() => {
 })
 const businessSource = computed(() => sampleBusiness.value ? '本地模拟' : '未接入')
 const activeTask = shiftTasks.find(task => task.kind === 'active')
+// 视图只切换当前地图组件；网关连接由外层工作区维持。
+const mapViews = [
+  { id: 'odin', name: 'ODIN1 点云', icon: 'layers' },
+  { id: 'scene', name: '示意场景', icon: 'tunnel' },
+  { id: 'grid', name: '二维栅格', icon: 'grid' },
+]
 const activeAlarms = computed(() => sampleBusiness.value ? sampleAlarms : [])
 const taskRows = computed(() => sampleBusiness.value ? shiftTasks : [])
 const currentPose = computed(() => {
@@ -64,6 +78,7 @@ const currentPose = computed(() => {
 watch(() => props.state?.mode, mode => {
   if (!mode || mode === knownMode.value) return
   knownMode.value = mode
+  chosenPolicy.value = null
   selectedPoint.value = ''
   if (dialog.value?.open) dialog.value.close()
 }, { immediate: true })
@@ -106,30 +121,31 @@ const detailTitle = computed(() => {
 <template>
   <div class="ic-root">
     <div class="ic-heading">
-      <div><h1>巡检驾驶舱</h1><p>机器人遥测、巡检任务与告警</p></div>
-      <button type="button" class="ic-source-button" @click="openDetail('sources')">
-        <Icon name="stack" :size="16" />数据来源<i></i><strong>{{ source }}</strong><span aria-hidden="true">⌄</span>
+      <h1>巡检驾驶舱</h1>
+      <button type="button" class="ic-source-button" aria-haspopup="dialog" @click="openDetail('sources')">
+        <Icon name="settings" :size="16" />数据来源<span class="ic-source-policy">{{ sampleBusiness ? '含模拟业务' : '仅接口业务' }}</span>
       </button>
     </div>
 
     <section ref="mapSection" class="ic-panel ic-map" aria-label="巡检态势地图">
-      <header class="ic-section-head"><div class="ic-section-title"><Icon name="stack" /> <h2>巡检态势地图</h2></div>
+      <header class="ic-section-head">
+        <div class="ic-section-title"><Icon name="compass" :size="21" /><h2>巡检态势地图</h2></div>
         <div class="ic-switch" role="group" aria-label="地图视图">
-          <button type="button" :aria-pressed="mapView==='odin'" @click="mapView='odin'">ODIN1 点云</button>
-          <button type="button" :aria-pressed="mapView==='scene'" @click="mapView='scene'">示意场景</button>
-          <button type="button" :aria-pressed="mapView==='grid'" @click="mapView='grid'">二维栅格</button>
+          <button v-for="view in mapViews" :key="view.id" type="button" :aria-pressed="mapView === view.id" @click="mapView = view.id">
+            <Icon :name="view.icon" :size="14" />{{ view.name }}
+          </button>
         </div>
       </header>
       <OdinPointCloud v-if="mapView==='odin'" />
       <div v-else-if="mapView==='scene'" class="ic-scene"><TunnelScene ref="scene" :selected-point="selectedPoint" @select-point="openPoint" /></div>
       <div v-else class="ic-grid-map"><MapView :map="map" :pose="currentPose" :status="mapStatus" :connection="connection" /></div>
-      <div v-if="mapView!=='odin'" class="ic-map-caption"><span class="ic-map-source"><i class="ic-dot" :class="mapView==='scene' || connected ? 'green' : 'amber'"></i>{{ mapView==='scene' ? '本地合成场景' : source + ' · 二维地图' }}</span>
+      <div v-if="mapView!=='odin'" class="ic-map-caption"><span class="ic-map-source"><i class="ic-dot" :class="mapView==='scene' || connected ? 'green' : 'amber'"></i>{{ mapView==='scene' ? '本地合成场景' : gridSource }}</span>
         <span v-if="mapView==='scene'">{{ selectedPoint ? selectedPoint + ' · ' + scenePoints[selectedPoint].name : '3 个巡检点位' }}</span>
         <span v-else>{{ connected ? (currentPose ? '定位有效' : '无有效位姿') : (map ? '缓存栅格 · 网关离线' : '网关未连接') }}</span>
       </div>
     </section>
 
-    <div class="ic-kpis">
+    <section class="ic-kpis" aria-label="运行摘要">
       <button type="button" class="ic-kpi" @click="openDetail('robot')">
         <span class="ic-kpi-top"><span class="ic-kicon"><Icon name="pulse" :size="17" /></span>机器人本体<span class="ic-tag">{{ source }}</span></span>
         <span class="ic-kvalue">{{ robot.model || (knownMode ? 'A2' : '待连接') }}<small class="ic-pill" :class="{ green: online }"><i></i>{{ robotStatus }}</small></span>
@@ -143,49 +159,60 @@ const detailTitle = computed(() => {
       <button type="button" class="ic-kpi" @click="sampleBusiness ? openDetail('task', activeTask) : openDetail('tasks')">
         <span class="ic-kpi-top"><span class="ic-kicon blue"><Icon name="trail" :size="17" /></span>当前任务<span class="ic-tag">{{ businessSource }}</span></span>
         <span class="ic-kvalue" :class="{ 'ic-task-name': sampleBusiness }">{{ sampleBusiness ? activeTask.title : '—' }}</span>
-        <span class="ic-kfoot"><template v-if="sampleBusiness"><i class="ic-dot green"></i>进行中 <span class="ic-divider">/</span> 已完成 1 / 3 个点位</template><template v-else>等待任务接口</template></span>
+        <span class="ic-kfoot"><template v-if="sampleBusiness"><i class="ic-dot green"></i>进行中 <span class="ic-divider">/</span> 已完成 {{ activeTask.finished }} / {{ activeTask.total }} 个点位</template><template v-else>等待任务接口</template></span>
       </button>
       <button type="button" class="ic-kpi" @click="openDetail('alarms')">
         <span class="ic-kpi-top"><span class="ic-kicon amber"><Icon name="shield" :size="17" /></span>活动告警<span class="ic-tag">{{ businessSource }}</span></span>
-        <span class="ic-kvalue ic-num">{{ sampleBusiness ? activeAlarms.length : '—' }}<small>条</small></span>
-        <span class="ic-kfoot"><template v-if="sampleBusiness"><i class="ic-dot red"></i>告警 1 <span class="ic-divider">/</span><i class="ic-dot amber"></i>提醒 1</template><template v-else>等待告警接口</template></span>
+        <span class="ic-kvalue ic-num" :class="{'ic-alarm-total': activeAlarms.length}">{{ sampleBusiness ? activeAlarms.length : '—' }}<small>条</small></span>
+        <span class="ic-kfoot"><template v-if="sampleBusiness"><i class="ic-dot red"></i>告警 {{ activeAlarms.filter(alarm => alarm.tone === 'red').length }} <span class="ic-divider">/</span><i class="ic-dot amber"></i>提醒 {{ activeAlarms.filter(alarm => alarm.tone === 'amber').length }}</template><template v-else>等待告警接口</template></span>
       </button>
-    </div>
+    </section>
 
     <div class="ic-lower">
       <section class="ic-panel ic-shift">
-        <header class="ic-section-head"><div class="ic-section-title"><Icon name="clock" /><h2>当班任务</h2></div><span class="ic-tag">{{ businessSource }}</span></header>
+        <header class="ic-section-head">
+          <div class="ic-section-title"><Icon name="clock" /><h2>当班任务</h2><span class="ic-tag">{{ businessSource }}</span></div>
+          <button class="ic-text-link" type="button" @click="openDetail('tasks')">班次明细 <Icon name="next" :size="14" /></button>
+        </header>
         <div v-if="taskRows.length" class="ic-task-list">
           <button v-for="task in taskRows" :key="task.id" type="button" class="ic-task-row" :class="task.kind" @click="openDetail('task',task)">
-            <span class="ic-timeline-dot"></span>
-            <span class="ic-task-content"><span class="ic-task-meta"><b>{{ task.time }}</b><span class="ic-pill" :class="{green:task.kind==='active'}">{{ task.status }}</span></span>
-              <strong>{{ task.title }}</strong><small>{{ task.id }} <span>·</span> {{ task.point }} {{ scenePoints[task.point].name }}</small>
-              <span v-if="task.kind==='active'" class="ic-task-progress"><i></i><small>1 / 3 点位</small></span>
+            <time>{{ task.time }}</time><span class="ic-timeline-dot" aria-hidden="true"></span>
+            <span class="ic-task-content">
+              <strong>{{ task.title }}</strong><small>{{ task.point }} · {{ scenePoints[task.point].name }}</small>
             </span>
+            <span class="ic-pill" :class="{green:task.kind==='active'}">{{ task.status }}</span>
           </button>
         </div>
         <p v-else class="ic-empty">当班任务接口尚未接入。</p>
-        <button class="ic-panel-link" type="button" @click="openDetail('tasks')">查看班次明细 <span aria-hidden="true">→</span></button>
       </section>
 
       <section class="ic-panel ic-alerts" aria-label="告警列表">
-        <header class="ic-section-head"><div class="ic-section-title"><Icon name="radar" /><h2>告警动态</h2><span class="ic-tag">{{ businessSource }}</span></div>
-          <button class="ic-text-link" type="button" @click="openDetail('alarms')">全部告警 <span aria-hidden="true">→</span></button>
+        <header class="ic-section-head">
+          <div class="ic-section-title"><Icon name="radar" /><h2>告警动态</h2><span class="ic-tag">{{ businessSource }}</span></div>
+          <button class="ic-text-link" type="button" @click="openDetail('alarms')">全部告警 <Icon name="next" :size="14" /></button>
         </header>
-        <div v-if="activeAlarms.length" class="ic-table-wrap"><table><thead><tr><th>发生时间</th><th>级别</th><th>告警内容</th><th>关联点位</th><th>处理状态</th><th><span class="ic-sr">详情</span></th></tr></thead>
-          <tbody><tr v-for="alarm in activeAlarms" :key="alarm.id"><td class="ic-mono">{{ alarm.time }}</td><td><span class="ic-alert-level" :class="alarm.tone"><i></i>{{ alarm.severity }}</span></td><td><button class="ic-table-title" type="button" @click="openDetail('alarm',alarm)">{{ alarm.title }}</button></td><td>{{ alarm.point }} · {{ scenePoints[alarm.point].name }}</td><td>{{ reviewedIds.includes(alarm.id) ? '已阅' : alarm.status }}</td><td><button type="button" class="ic-text-link" @click="openDetail('alarm',alarm)">详情</button></td></tr></tbody>
-        </table></div>
+        <div v-if="activeAlarms.length" class="ic-alarm-list">
+          <button v-for="alarm in activeAlarms" :key="alarm.id" type="button" class="ic-alarm-row" @click="openDetail('alarm',alarm)">
+            <span class="ic-alert-level" :class="alarm.tone"><i></i>{{ alarm.severity }}</span>
+            <span class="ic-alarm-content">
+              <strong>{{ alarm.title }}</strong>
+              <small><time>{{ alarm.time }}</time><span>·</span>{{ alarm.point }} {{ scenePoints[alarm.point].name }}</small>
+            </span>
+            <span class="ic-alarm-status">{{ reviewedIds.includes(alarm.id) ? '已阅' : alarm.status }}</span>
+            <Icon name="chevron" :size="14" />
+          </button>
+        </div>
         <p v-else class="ic-empty">告警接口尚未接入，当前数量未知。</p>
       </section>
     </div>
 
     <dialog ref="dialog" class="ic-dialog" aria-labelledby="ic-dialog-title" @close="detail=null" @click="($event.target===dialog) && closeDetail()">
-      <article v-if="detail"><header><h2 id="ic-dialog-title">{{ detailTitle }}</h2><button type="button" aria-label="关闭详情" @click="closeDetail()">×</button></header>
+      <article v-if="detail"><header><h2 id="ic-dialog-title">{{ detailTitle }}</h2><button type="button" aria-label="关闭详情" @click="closeDetail()"><Icon name="close" :size="17" /></button></header>
         <template v-if="detail.type==='sources'">
-          <dl><div><dt>本体、电量与二维图</dt><dd>{{ source }} · {{ robotStatus }}</dd></div><div><dt>ODIN1 点云</dt><dd>本地实测 PCD 抽样，保留原始坐标和颜色</dd></div><div><dt>ODIN1 传感器位置</dt><dd>PC2 同图重定位，箭头表示传感器地图航向</dd></div><div><dt>示意场景与点位</dt><dd>本地合成场景，与实机坐标独立</dd></div><div><dt>任务、充电仓、告警</dt><dd>{{ sampleBusiness ? '本地合成样例' : '尚无业务接口' }}</dd></div></dl>
+          <dl><div><dt>本体与电量</dt><dd>{{ source }} · {{ robotStatus }}</dd></div><div><dt>二维栅格</dt><dd>{{ gridSource }}</dd></div><div><dt>ODIN1 点云</dt><dd>本地实测 PCD 抽样，保留原始坐标和颜色</dd></div><div><dt>ODIN1 传感器位置</dt><dd>PC2 同图重定位，箭头表示传感器地图航向</dd></div><div><dt>示意场景与点位</dt><dd>本地合成场景，与实机坐标独立</dd></div><div><dt>任务、充电仓、告警</dt><dd>{{ sampleBusiness ? '本地合成样例' : '尚无业务接口' }}</dd></div></dl>
           <fieldset><legend>业务数据展示</legend>
             <label v-for="option in [{id:'demo',text:'显示本地模拟业务'},{id:'gateway',text:'仅显示已接入数据'}]" :key="option.id"><input v-model="sourcePolicy" type="radio" name="ic-source" :value="option.id"> {{ option.text }}</label>
-          </fieldset><p>本体与二维图始终读取网关；本地业务样例仅用于演示。</p>
+          </fieldset><p>此设置只影响任务、充电仓和告警的演示样例。</p>
         </template>
         <template v-else-if="detail.type==='robot' || detail.type==='dock'">
           <dl><div><dt>遥测来源</dt><dd>{{ source }} · {{ robotStatus }}</dd></div><div><dt>机器人标识</dt><dd>{{ robot.id || '未知' }}</dd></div>

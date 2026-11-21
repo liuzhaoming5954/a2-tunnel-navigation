@@ -3,6 +3,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Icon from './Icon.vue'
 import InspectionCockpit from './InspectionCockpit.vue'
 import MaintenanceConsole from './MaintenanceConsole.vue'
+import PatrolTask from './PatrolTask.vue'
+import SingleGoalTask from './SingleGoalTask.vue'
 import { groups, pageInfo, readPage } from './navigation.js'
 import { useGateway } from './useGateway.js'
 import './portal.css'
@@ -23,6 +25,10 @@ const dateFormat = new Intl.DateTimeFormat('zh-CN', {year:'numeric',month:'2-dig
 const timeFormat = new Intl.DateTimeFormat('zh-CN', {hour:'2-digit',minute:'2-digit',hour12:false})
 const gatewayLabel = computed(() => {
   if (connection.value !== 'connected') return connection.value === 'connecting' ? '网关连接中' : '网关离线'
+  if (state.value?.deployment === 'station') {
+    if (state.value.pc2_connected) return '上位机在线 · PC2 已连接'
+    return state.value.pc2_reason === 'pc2_invalid_response' ? '上位机在线 · PC2 接口异常' : '上位机在线 · PC2 未连接'
+  }
   return { simulator:'模拟网关在线', robot_readonly:'实机网关 · 只读', robot:'实机网关在线' }[state.value?.mode] ?? '来源未知'
 })
 
@@ -96,8 +102,8 @@ onBeforeUnmount(() => {
     <button v-if="mobileOpen" class="portal-scrim" aria-label="关闭导航遮罩" tabindex="-1" @click="closeNav(true)" />
     <aside id="workspace-nav" class="portal-sidebar" :class="{ 'is-open': mobileOpen }" aria-label="工作区">
       <a href="#/cockpit" class="portal-brand" @click="closeNav()">
-        <span class="portal-mark" aria-hidden="true"><Icon name="tunnel" :size="30" /></span>
-        <span><strong>A2 巡检平台</strong><small>管廊巡检工作台</small></span>
+        <span class="portal-mark" aria-hidden="true"><Icon name="tunnel" :size="24" /></span>
+        <span class="portal-brand-name"><strong>A2 巡检平台</strong><small>管廊机器人工作台</small></span>
       </a>
       <button type="button" class="portal-nav-close" aria-label="关闭导航" @click="closeNav(true)"><Icon name="close" /></button>
       <nav aria-label="主导航" class="portal-nav-list">
@@ -119,14 +125,14 @@ onBeforeUnmount(() => {
           <Icon name="gamepad" />维护遥控
         </a>
       </nav>
-      <div class="portal-foot"><span class="portal-foot-icon"><Icon name="terminal" :size="18" /></span><span>本地工作区<small>Unitree A2</small></span></div>
+      <div class="portal-foot"><span class="portal-foot-icon"><Icon name="terminal" :size="17" /></span><span><strong>本地工作区</strong><small>Unitree A2</small></span></div>
     </aside>
     <div class="portal-work" :inert="mobileOpen">
       <header class="portal-bar">
         <button ref="navToggle" type="button" class="portal-mobile-toggle" aria-label="打开导航" aria-controls="workspace-nav" :aria-expanded="mobileOpen" @click="handleMenu"><Icon name="menu" /></button>
-        <div class="portal-crumb"><Icon name="workspace" :size="16"/><span>{{ info.section }}</span><span class="portal-slash">/</span><strong>{{ info.title }}</strong></div>
-        <div class="portal-time"><Icon name="clock" :size="14" /><time :datetime="clock.toISOString()">{{ dateFormat.format(clock) }}　{{ timeFormat.format(clock) }}</time></div>
-        <span class="portal-link-state" :class="{online: connection === 'connected'}"><i></i>{{ gatewayLabel }}</span>
+        <div class="portal-crumb"><span>{{ info.section }}</span><Icon name="chevron" :size="12"/><strong>{{ info.title }}</strong></div>
+        <time class="portal-time" :datetime="clock.toISOString()"><span>{{ dateFormat.format(clock) }}</span><b>{{ timeFormat.format(clock) }}</b></time>
+        <span class="portal-link-state" role="status" :class="{online: connection === 'connected' && state?.pc2_connected !== false}"><i aria-hidden="true"></i>{{ gatewayLabel }}</span>
       </header>
       <main id="workspace-content" ref="workArea" class="portal-content" tabindex="-1">
         <aside v-if="current !== 'maintenance' && ['stopping','stop_unconfirmed'].includes(phase)" role="status" class="portal-stop-status">
@@ -134,13 +140,16 @@ onBeforeUnmount(() => {
         </aside>
         <InspectionCockpit v-if="current === 'cockpit'" :state="state" :map="map" :connection="connection" :map-status="mapStatus" />
         <MaintenanceConsole v-else-if="current === 'maintenance'" :gateway="gateway" />
+        <PatrolTask v-else-if="current === 'tasks' && state?.deployment === 'simulator'"
+          :state="state" :connection="connection" />
+        <SingleGoalTask v-else-if="current === 'tasks' && state?.deployment === 'station' && state.single_goal_enabled === true"
+          :connection="connection" />
         <section v-else class="portal-reserved">
-          <h1>{{ info.title }}</h1>
+          <header class="portal-page-heading"><h1>{{ info.title }}</h1><span v-if="info.subject" class="portal-planned">模块待接入</span></header>
           <div class="portal-empty">
-            <div class="portal-empty-icon"><Icon :name="info.icon" :size="28" /></div>
+            <div class="portal-empty-icon"><Icon :name="info.icon" :size="26" /></div>
             <h2>{{ info.subject || '未找到此页面' }}</h2>
             <p>{{ info.description || '请从主导航选择页面。' }}</p>
-            <span v-if="info.subject" class="portal-planned">模块待接入</span>
             <a class="portal-back" href="#/cockpit">返回巡检驾驶舱 <Icon name="next" :size="15"/></a>
           </div>
         </section>

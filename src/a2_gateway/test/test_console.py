@@ -114,6 +114,8 @@ class ConsoleGatewayTest(unittest.TestCase):
         self.assertEqual(set(grid["cells"]), {-1, 0, 100})
         status, _ = request("POST", "/api/control/session", {}, "https://elsewhere.test")
         self.assertEqual(status, 403)
+        self.assertEqual(request("POST", "/api/patrol/point", {}, "https://elsewhere.test")[0], 403)
+        self.assertEqual(request("GET", "/api/patrol")[1]["phase"], "idle")
 
         origin = f"http://127.0.0.1:{port}"
         status, session = request("POST", "/api/control/session", {}, origin)

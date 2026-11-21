@@ -18,7 +18,7 @@
 
 工程依据见[总体方案 v0.5 第 6、7 章](A2-PRO_Utility_Tunnel_Navigation_v0.5.md)、[操作台运行说明](../a2-operator-console.md)、[实机验证记录](../implementation-status.md)、[现有 Vue 页面](../../src/a2_gateway/web/src/App.vue)和[网关实现](../../src/a2_gateway/a2_gateway/server.py)。
 
-可直接评估复用的入口包括[二维栅格与位姿叠加](../../src/a2_gateway/web/src/MapView.vue)、[维护控制会话](../../src/a2_gateway/web/src/useGateway.js)、[ROS 遥测与新鲜度](../../src/a2_gateway/a2_gateway/ros_telemetry.py)、[模拟任务控制器](../../src/a2_mission/a2_mission/controller.py)、[事务收据与事件](../../src/a2_storage/a2_storage/journal.py)和[离线路线规划](../../src/a2_navigation/a2_navigation/offline_planner.py)。机器人使用机载任务包、授权与记录；维护站或甲方项目内网部署管理、检索、固定视频适配、巡后识别、报表与开放接口服务。网络恢复时双方按清单同步，并按采集时间核对数据。固定摄像头可用性取决于自身链路。
+可直接评估复用的入口包括[二维栅格与位姿叠加](../../src/a2_gateway/web/src/MapView.vue)、[维护控制会话](../../src/a2_gateway/web/src/useGateway.js)、[ROS 遥测与新鲜度](../../src/a2_gateway/a2_gateway/ros_telemetry.py)、[模拟任务控制器](../../src/a2_mission/a2_mission/controller.py)、[事务收据与事件](../../src/a2_storage/a2_storage/journal.py)和[离线路线规划](../../src/a2_navigation/a2_navigation/offline_planner.py)。驾驶舱网页、静态点云和可选二维栅格由上位机托管。PC2 的只读 HTTP 服务向上位机提供机器人状态和 ODIN1 传感器位姿，设备端执行重定位。两端分别出包，现场联调步骤见[操作说明](../a2-operator-console.md)。机器人使用机载任务包、授权与记录；维护站或甲方项目内网部署管理、检索、固定视频适配、巡后识别、报表与开放接口服务。网络恢复时双方按清单同步，并按采集时间核对数据。固定摄像头可用性取决于自身链路。
 
 ## 2. 导航与页面布局
 

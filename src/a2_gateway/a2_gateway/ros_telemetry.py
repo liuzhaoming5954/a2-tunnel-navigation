@@ -83,7 +83,7 @@ def _grid_from_message(message, map_frame):
         raise ValueError("Invalid occupancy cell")
     yaw = _projected_yaw(info.origin.orientation, planar=True)
     cells = bytes(value + 1 for value in message.data)
-    # The ROS array is already row-major with the bottom row first.
+    # ROS 数组已按行优先排列，并从底行开始。
     identity = [map_frame, info.width, info.height, info.resolution, *(value or 0.0 for value in xyz), yaw]
     digest = sha256(json.dumps(identity, separators=(",", ":"), allow_nan=False).encode("utf-8") + b"\0")
     digest.update(cells)
@@ -103,25 +103,23 @@ def _fresh(stamp_ns, receipt_ns, ros_now_ns, steady_now_ns, max_age_ns, source_a
 class RosTelemetry:
     """Own an executor for receive-only topics and exact-time TF lookups."""
 
-    def __init__(self, args):
+    def __init__(self, args, *, platform_only=False):
         self._args = args
-        self._pose_max_ns = _duration(args.max_pose_age_s)
         self._platform_max_ns = _duration(args.max_platform_age_s)
-        frames = (args.map_frame, args.odom_frame, args.base_frame)
-        if len(set(frames)) != 3 or any(not frame or frame.startswith("/") for frame in frames):
-            raise ValueError("Map, odometry, and base frames must be distinct TF names without a leading slash")
+        if not platform_only:
+            self._pose_max_ns = _duration(args.max_pose_age_s)
+            frames = (args.map_frame, args.odom_frame, args.base_frame)
+            if len(set(frames)) != 3 or any(not frame or frame.startswith("/") for frame in frames):
+                raise ValueError("Map, odometry, and base frames must be distinct TF names without a leading slash")
 
         try:
             import rclpy
             from a2_interfaces.msg import PlatformState
-            from nav_msgs.msg import OccupancyGrid, Odometry
             from rclpy.context import Context
             from rclpy.executors import SingleThreadedExecutor
             from rclpy.parameter import Parameter
-            from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+            from rclpy.qos import QoSProfile, ReliabilityPolicy
             from rclpy.signals import SignalHandlerOptions
-            from rclpy.time import Time
-            from tf2_ros import Buffer, TransformException, TransformListener
         except ImportError as exc:
             raise RuntimeError("ROS telemetry requires a sourced ROS 2 and a2_interfaces workspace") from exc
 
@@ -137,8 +135,7 @@ class RosTelemetry:
         self._last_odom_ns = 0
         self._map_pose_floor_ns = 0
         self._received_map = False
-        self._time_type = Time
-        self._tf_exception = TransformException
+        self._buffer = None
         self._context = Context()
         self._node = self._executor = self._listener = None
         rclpy.init(args=[], context=self._context, signal_handler_options=SignalHandlerOptions.NO)
@@ -147,18 +144,12 @@ class RosTelemetry:
                 "a2_gateway_telemetry", context=self._context, enable_rosout=False,
                 start_parameter_services=False, parameter_overrides=[Parameter("use_sim_time", value=args.use_sim_time)],
             )
-            self._buffer = Buffer(node=self._node)
-            self._listener = TransformListener(self._buffer, self._node, spin_thread=False)
-            self._node.create_subscription(OccupancyGrid, args.map_topic, self._read_map, QoSProfile(
-                depth=1,
-                durability=(DurabilityPolicy.TRANSIENT_LOCAL if args.map_durability == "transient-local"
-                            else DurabilityPolicy.VOLATILE),
-                reliability=(ReliabilityPolicy.RELIABLE if args.map_reliability == "reliable"
-                             else ReliabilityPolicy.BEST_EFFORT),
-            ))
             sample_qos = QoSProfile(depth=32, reliability=ReliabilityPolicy.BEST_EFFORT)
-            self._node.create_subscription(Odometry, args.odom_topic, self._read_odom, sample_qos)
             self._node.create_subscription(PlatformState, args.platform_topic, self._read_platform, sample_qos)
+            # PC2 的 ODIN1 观测器已独立接收定位消息；只读数据服务只订阅平台状态，
+            # 避免额外创建 /map、/odom 和 TF 订阅，也无需加载导航消息及 TF 库。
+            if not platform_only:
+                self._subscribe_navigation(sample_qos)
             self._executor = SingleThreadedExecutor(context=self._context)
             self._executor.add_node(self._node)
             self._thread = Thread(target=self._run, name="a2-ros-telemetry", daemon=True)
@@ -166,6 +157,30 @@ class RosTelemetry:
         except Exception:
             self._release_ros()
             raise
+
+    def _subscribe_navigation(self, sample_qos):
+        """给需要二维栅格和机身位姿的维护模式配置地图与 TF 输入。"""
+        try:
+            from nav_msgs.msg import OccupancyGrid, Odometry
+            from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+            from rclpy.time import Time
+            from tf2_ros import Buffer, TransformException, TransformListener
+        except ImportError as exc:
+            raise RuntimeError("二维栅格及机身位姿需要 ROS 2 的 nav_msgs 和 tf2_ros") from exc
+
+        args = self._args
+        self._time_type = Time
+        self._tf_exception = TransformException
+        self._buffer = Buffer(node=self._node)
+        self._listener = TransformListener(self._buffer, self._node, spin_thread=False)
+        self._node.create_subscription(OccupancyGrid, args.map_topic, self._read_map, QoSProfile(
+            depth=1,
+            durability=(DurabilityPolicy.TRANSIENT_LOCAL if args.map_durability == "transient-local"
+                        else DurabilityPolicy.VOLATILE),
+            reliability=(ReliabilityPolicy.RELIABLE if args.map_reliability == "reliable"
+                         else ReliabilityPolicy.BEST_EFFORT),
+        ))
+        self._node.create_subscription(Odometry, args.odom_topic, self._read_odom, sample_qos)
 
     def _read_map(self, message):
         try:
@@ -215,7 +230,7 @@ class RosTelemetry:
             "linear_mps": linear if message.velocity_valid and math.isfinite(linear) else None,
             "angular_radps": angular if message.velocity_valid and math.isfinite(angular) else None,
         }
-        # The aggregate valid flag can be false when only some measurements are known.
+        # 只有部分测量值可用时，整体有效标志可能为 false。
         available = (message.reason not in ("NO_DATA", "STALE", "SOURCE_TIME_IN_FUTURE")
                      and (message.valid or any(value is not None for value in values.values())))
         with self._lock:
@@ -263,7 +278,7 @@ class RosTelemetry:
                     self._clock_ns = now_ns
                     if reset_clock:
                         self._pose = self._platform = None
-                if reset_clock:
+                if reset_clock and self._buffer is not None:
                     self._pending.clear()
                     self._buffer.clear()
                     self._last_odom_ns = self._map_pose_floor_ns = 0
@@ -303,6 +318,11 @@ class RosTelemetry:
         with self._lock:
             grid = self._map
         return {**grid.metadata, "cells": [value - 1 for value in grid.cells]} if grid else None
+
+    def navigation_grid(self):
+        """给本机目标校验器使用，只复制元数据；格值使用不可变字节对象。"""
+        with self._lock:
+            return (self._map.metadata.copy(), self._map.cells) if self._map else (None, None)
 
     def _release_ros(self):
         if self._listener is not None:

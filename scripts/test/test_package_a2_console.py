@@ -1,62 +1,89 @@
-import json
+"""离线验证 PC2 和上位机的发布边界，不启动 ROS、设备或数据链路。"""
+
+import hashlib
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
-from scripts import package_a2_console
+from scripts import package_a2_console as packager
 
 
-class PackageConsoleTest(unittest.TestCase):
-    def test_extracted_bundle_contains_importable_gateway(self):
-        with tempfile.TemporaryDirectory() as temp:
-            workspace = Path(temp) / "workspace"
-            packager = "scripts/package_a2_console.py"
-            for name in (packager, *package_a2_console.FILES):
-                target = workspace / name
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(package_a2_console.ROOT / name, target)
-            for name in ("src/a2_interfaces/msg", "src/a2_interfaces/srv"):
-                shutil.copytree(package_a2_console.ROOT / name, workspace / name)
+class ConsolePackageTest(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.work = Path(temp.name)
+        self.root = self.work / "project"
+        # 复制真实入口与运行时源码，测试用的前端构建产物独立合成。
+        for relative in (*packager.COMMON_FILES, *packager.PC2_FILES, *packager.STATION_FILES):
+            target = self.root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(packager.ROOT / relative, target)
+        for kind in ("msg", "srv"):
+            subtree = Path("src/a2_interfaces") / kind
+            shutil.copytree(packager.ROOT / subtree, self.root / subtree)
+        root_patch = patch.object(packager, "ROOT", self.root)
+        root_patch.start()
+        self.addCleanup(root_patch.stop)
 
-            frontend = workspace / package_a2_console.DIST
-            (frontend / "assets").mkdir(parents=True)
-            for name in ("index.html", "a2.svg", "assets/index.js", "assets/index.css"):
-                (frontend / name).write_text("synthetic frontend fixture", encoding="utf-8")
+    def build_and_check(self, role):
+        output = self.work / f"{role}.zip"
+        packager.write_bundle(role, output)
+        with zipfile.ZipFile(output) as archive:
+            names = set(archive.namelist())
+            manifest = archive.read("SHA256SUMS").decode().splitlines()
+            checksums = {}
+            for line in manifest:
+                digest, name = line.split("  ", 1)
+                checksums[name] = digest
+            self.assertEqual(set(checksums), names - {"SHA256SUMS"})
+            for name, digest in checksums.items():
+                self.assertEqual(hashlib.sha256(archive.read(name)).hexdigest(), digest)
+            deployed = self.work / role
+            archive.extractall(deployed)
+        # 在解压目录运行独立 Python，避免从原始项目意外找到漏打包的模块。
+        subprocess.run([sys.executable, "-I", "scripts/run_a2_console.py", "--role", role, "--help"],
+                       cwd=deployed, capture_output=True, check=True, timeout=5)
+        return names
 
-            map_yaml = workspace / "map.yaml"
-            map_yaml.write_text(json.dumps({
-                "image": "map.pgm", "resolution": 0.25, "origin": [0, 0, 0],
-                "negate": 0, "occupied_thresh": 0.65, "free_thresh": 0.25,
-            }), encoding="utf-8")
-            map_yaml.with_suffix(".pgm").write_bytes(b"P5\n2 1\n255\n\xff\x00")
-            archive = Path(temp) / "console.zip"
-            packaged = subprocess.run(
-                [sys.executable, packager, "--map", str(map_yaml), "--output", str(archive)],
-                cwd=workspace, capture_output=True, text=True, timeout=10,
-            )
-            self.assertEqual(packaged.returncode, 0, packaged.stderr)
-            extracted = Path(temp) / "extracted"
-            with zipfile.ZipFile(archive) as bundle:
-                bundle.extractall(extracted)
+    def test_pc2_builds_without_vue_or_map(self):
+        names = self.build_and_check("pc2")
+        self.assertIn("scripts/observe_odin1_pose.py", names)
+        self.assertIn("scripts/start_a2_console_readonly.sh", names)
+        self.assertIn("src/a2_interfaces/msg/PlatformState.msg", names)
+        self.assertFalse(any("/web/" in n or n.startswith(("maps/", "data/")) for n in names))
+        self.assertNotIn("scripts/publish_a2_map.py", names)
+        self.assertNotIn("src/a2_gateway/a2_gateway/station.py", names)
+        self.assertNotIn("src/a2_gateway/a2_gateway/simulator.py", names)
+        self.assertNotIn("src/a2_gateway/a2_gateway/patrol.py", names)
+        self.assertIn("src/a2_gateway/a2_gateway/pc2_goal.py", names)
+        self.assertIn("src/a2_navigation/a2_navigation/nav2_goal_client.py", names)
+        self.assertIn("src/a2_navigation/a2_navigation/single_goal.py", names)
+        self.assertIn("src/a2_navigation/a2_navigation/offline_planner.py", names)
 
-            launch = """\
-import runpy
-import sys
-sys.path.insert(0, 'src/a2_gateway')
-from a2_gateway.motion import LocalMotionClient
-sys.argv = ['scripts/run_a2_console.py', '--help']
-runpy.run_path(sys.argv[0], run_name='__main__')
-"""
-            imported = subprocess.run(
-                [sys.executable, "-I", "-c", launch],
-                cwd=extracted, capture_output=True, text=True, timeout=10,
-            )
-            self.assertEqual(imported.returncode, 0, imported.stderr)
-            self.assertIn("--motion-socket", imported.stdout)
+    def test_station_bundles_vue_without_field_data_or_pc2_launchers(self):
+        dist = self.root / packager.DIST
+        (dist / "assets").mkdir(parents=True)
+        for name in ("index.html", "a2.svg", "assets/app.js", "assets/app.css", "assets/field.pcd"):
+            (dist / name).write_bytes(b"fixture")
+        names = self.build_and_check("station")
+        self.assertIn(f"{packager.DIST}/assets/app.js", names)
+        self.assertNotIn(f"{packager.DIST}/assets/field.pcd", names)
+        self.assertIn("src/a2_navigation/a2_navigation/offline_planner.py", names)
+        self.assertIn("src/a2_gateway/a2_gateway/patrol.py", names)
+        self.assertNotIn("scripts/publish_a2_platform_state.py", names)
+        self.assertNotIn("scripts/observe_odin1_pose.py", names)
+        self.assertFalse(any(n.startswith("src/a2_interfaces/") for n in names))
+        output = self.work / "station.zip"
+        original = output.read_bytes()
+        with self.assertRaises(FileExistsError):
+            packager.write_bundle("station", output)
+        self.assertEqual(original, output.read_bytes())
 
 
 if __name__ == "__main__":

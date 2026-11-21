@@ -10,7 +10,8 @@ function pixel(red, green, blue) {
     ? (red | (green << 8) | (blue << 16) | 0xff000000) >>> 0
     : ((red << 24) | (green << 16) | (blue << 8) | 255) >>> 0
 }
-const background = pixel(14, 25, 33)
+// 绘图背景与组件底色 #151b30 保持一致，实测点仍以采集时的 RGB 覆盖背景。
+const background = pixel(21, 27, 48)
 
 export function createOdinView(canvas, metadata, buffer, showMarker) {
   const count = metadata.pointCount

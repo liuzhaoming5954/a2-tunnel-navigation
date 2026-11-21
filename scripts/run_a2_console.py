@@ -5,7 +5,9 @@ from pathlib import Path
 import sys
 
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "a2_gateway"))
+# 离线包沿用工作区目录结构。上位机加载可选二维图时复用已有的栅格解析器。
+source = Path(__file__).resolve().parents[1] / "src"
+sys.path[:0] = [str(source / "a2_gateway"), str(source / "a2_navigation")]
 
 from a2_gateway.server import main
 

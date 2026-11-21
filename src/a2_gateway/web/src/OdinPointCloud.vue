@@ -155,61 +155,221 @@ onBeforeUnmount(() => {
         </svg>
         <span>ODIN1 传感器</span>
       </div>
-      <div v-if="status === 'ready'" class="odin-tools" role="group" aria-label="点云视角">
-        <button type="button" @click="view.top()">俯视</button>
-        <button type="button" title="适配全部抽样点" @click="view.fitAll()">全图</button>
-        <button type="button" @click="view.reset()">默认视角</button>
-        <button type="button" title="缩小" aria-label="缩小" @click="view.zoom(1 / 1.4)"><Icon name="minus" :size="15" /></button>
-        <button type="button" title="放大" aria-label="放大" @click="view.zoom(1.4)"><Icon name="plus" :size="15" /></button>
-      </div>
+      <template v-if="status === 'ready'">
+        <p class="odin-gestures">拖动旋转 <i>·</i> 滚轮缩放 <i>·</i> 右键平移</p>
+        <div class="odin-tools" role="group" aria-label="点云视角">
+          <div class="odin-tool-group">
+            <button type="button" @click="view.top()">俯视</button>
+            <button type="button" title="适配全部抽样点" @click="view.fitAll()">全图</button>
+            <button type="button" @click="view.reset()">默认视角</button>
+          </div>
+          <div class="odin-tool-group odin-zoom">
+            <button type="button" title="缩小" aria-label="缩小" @click="view.zoom(1 / 1.4)"><Icon name="minus" :size="16" /></button>
+            <button type="button" title="放大" aria-label="放大" @click="view.zoom(1.4)"><Icon name="plus" :size="16" /></button>
+          </div>
+        </div>
+      </template>
       <div v-else class="odin-state" role="status">
-        <Icon :name="status === 'error' ? 'emptyMap' : 'layers'" :size="24" />
-        <span>{{ status === 'error' ? message : '正在加载 ODIN1 实测点云' }}</span>
+        <div class="odin-state-icon"><Icon :name="status === 'error' ? 'emptyMap' : 'layers'" :size="26" /></div>
+        <strong>{{ status === 'error' ? '点云地图暂不可用' : '正在加载 ODIN1 实测点云' }}</strong>
+        <span v-if="status === 'error'">{{ message }}</span>
         <button v-if="status === 'error'" type="button" @click="load">重新加载</button>
       </div>
     </div>
     <div v-if="metadata" class="odin-source">
-      <span>实测点云 <b>{{ metadata.sourceName }}</b></span>
-      <span>展示 {{ number.format(metadata.pointCount) }} 点 <i> / </i> 原始 {{ number.format(metadata.sourcePoints) }} 点</span>
+      <span class="odin-file"><Icon name="layers" :size="15" /><span>实测点云</span> <b>{{ metadata.sourceName }}</b></span>
+      <span class="odin-counts">展示 <b>{{ number.format(metadata.pointCount) }}</b> 点 <i>/</i> 原始 <b>{{ number.format(metadata.sourcePoints) }}</b> 点</span>
     </div>
     <div v-if="status === 'ready'" class="odin-pose">
       <div class="odin-pose-heading">
-        <strong>ODIN1 传感器位置</strong>
-        <span role="status" :class="{live: poseStatus === 'live'}"><i></i>{{ poseLabels[poseStatus] }}</span>
+        <Icon name="center" :size="15" /><strong>ODIN1 传感器位置</strong>
+        <span role="status" class="odin-signal" :data-status="poseStatus"><i></i>{{ poseLabels[poseStatus] }}</span>
         <button v-if="sensorPose && marker && !marker.inView" type="button" @click="view.centerSensor()">居中查看</button>
       </div>
       <div v-if="sensorPose" class="odin-coords" aria-label="传感器地图坐标与航向">
-        <span>X {{ sensorPose.x_m.toFixed(3) }} m</span><span>Y {{ sensorPose.y_m.toFixed(3) }} m</span><span>Z {{ sensorPose.z_m.toFixed(3) }} m</span>
-        <span title="地图 XY 平面，+X 朝 +Y 为正">航向 {{ (sensorPose.yaw_rad * 180 / Math.PI).toFixed(1) }}°</span>
+        <span><b>X</b> {{ sensorPose.x_m.toFixed(3) }} m</span><span><b>Y</b> {{ sensorPose.y_m.toFixed(3) }} m</span><span><b>Z</b> {{ sensorPose.z_m.toFixed(3) }} m</span>
+        <span title="地图 XY 平面，+X 朝 +Y 为正"><b>航向</b> {{ (sensorPose.yaw_rad * 180 / Math.PI).toFixed(1) }}°</span>
       </div>
     </div>
   </section>
 </template>
 
 <style scoped>
-.odin-map { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: #0e1921; color: #e8f3ee; }
+/* 绘图区与来源栏使用同一组深色；尺寸继续跟随驾驶舱分配给地图的可用高度。 */
+.odin-map {
+  --odin-base: #151b30;
+  --odin-strip: #202941;
+  --odin-line: #38435e;
+  --odin-muted: #bfcae0;
+  --odin-bright: #f4f4f9;
+  --odin-accent: #b9c6ff;
+  --odin-error: #ffb9b3;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--odin-base);
+  color: var(--odin-bright);
+  color-scheme: dark;
+}
 .odin-viewport { position: relative; height: var(--ic-map-height); overflow: hidden; }
-.odin-viewport canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+.odin-viewport canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+  cursor: grab;
+}
 .odin-viewport canvas:active { cursor: grabbing; }
-.odin-viewport canvas:focus-visible { outline: 2px solid #8cdab4; outline-offset: -3px; }
-.odin-tools { position: absolute; right: 10px; top: 10px; display: flex; gap: 1px; padding: 2px; background: #14262ded; border: 1px solid #5c7273; border-radius: 7px; }
-.odin-map button { display: inline-flex; align-items: center; justify-content: center; min-width: 30px; min-height: 28px; padding: 4px 8px; border: 0; border-radius: 4px; background: transparent; color: #e8f3ee; font: inherit; font-size: 12px; }
-.odin-map button:hover, .odin-map button:focus-visible { color: #dcfff0; background: #354e51; }
-.odin-state { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 12px; color: #ccdadb; font-size: 13px; text-align: center; }
-.odin-state button { border: 1px solid #657978; padding-inline: 14px; }
-.odin-source { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 3px 12px; padding: 7px 12px; color: #b6cbca; background: #17272c; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
-.odin-source b { font-weight: 500; color: #e9f2ee; }
-.odin-source i { margin: 0 2px; font-style: normal; color: #77918e; }
+.odin-viewport canvas:focus-visible { outline: 2px solid var(--odin-accent); outline-offset: -3px; }
+
+/* 视角与倍率分组放在画布边缘。提示不拦截鼠标，拖拽仍能到达底层画布。 */
+.odin-tools { position: absolute; bottom: 14px; right: 14px; display: flex; gap: 6px; }
+.odin-tool-group {
+  display: flex;
+  align-items: center;
+  padding: 2px;
+  background: #202941f2;
+  border: 1px solid #667293;
+  border-radius: 7px;
+  box-shadow: 0 2px 5px #0b102259;
+}
+.odin-map button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 4px 9px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--odin-bright);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.odin-zoom button { width: 32px; padding: 0; }
+.odin-map button:is(:hover, :focus-visible) { background: #354367; color: #e2e7ff; }
+.odin-map button:focus-visible { outline: 2px solid var(--odin-accent); outline-offset: -2px; }
+.odin-viewport .odin-gestures {
+  position: absolute;
+  bottom: 20px;
+  left: 16px;
+  margin: 0;
+  padding: 2px 5px;
+  border-radius: 3px;
+  pointer-events: none;
+  color: var(--odin-muted);
+  background: #151b30e8;
+  font-size: 11px;
+}
+.odin-gestures i, .odin-counts i { font-style: normal; color: #96a2bb; margin-inline: 3px; }
+
+/* 仅在未绘制实测点时显示网格底纹，接入数据后保留原始 PCD 颜色与几何。 */
+.odin-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 20px;
+  background-image: radial-gradient(circle, #2c344d 1px, transparent 1px);
+  background-size: 22px 22px;
+  color: var(--odin-muted);
+  text-align: center;
+  font-size: 12px;
+}
+.odin-state-icon {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  margin-bottom: 6px;
+  border: 1px solid #4c587a;
+  border-radius: 12px;
+  background: #252e49;
+  color: var(--odin-accent);
+}
+/* 加载失败时，错误图标与位姿无效提示使用同一警示色。 */
+.odin-state:has(> button) .odin-state-icon { color: var(--odin-error); }
+.odin-state strong { font-size: 16px; font-weight: 600; color: var(--odin-bright); }
+.odin-state button, .odin-pose-heading button {
+  padding-inline: 13px;
+  border: 1px solid #7381a5;
+  background: #2c375a;
+  color: #d8e0ff;
+}
+.odin-state button { margin-top: 7px; }
+
+/* 地图文件与动态位姿各占一行；遇到长文件名或窄屏时换行显示完整读数。 */
+.odin-source, .odin-pose {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px 16px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--odin-line);
+  background: var(--odin-strip);
+  color: var(--odin-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.odin-file, .odin-pose-heading, .odin-coords, .odin-signal {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+.odin-file { min-width: 0; }
+.odin-file > svg, .odin-pose-heading > svg { flex: none; color: var(--odin-accent); }
+.odin-file > b, .odin-counts > b, .odin-coords {
+  font-family: var(--ic-mono, monospace);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--odin-bright);
+}
+.odin-file > b { overflow-wrap: anywhere; }
+.odin-pose { background: #252e46; }
+.odin-pose-heading > strong { font-weight: 600; color: var(--odin-bright); }
+.odin-signal { gap: 6px; color: #ebc98d; }
+.odin-signal i { width: 6px; height: 6px; flex: none; border-radius: 50%; background: currentColor; }
+.odin-signal[data-status="live"] { color: var(--odin-accent); }
+.odin-signal:is([data-status="invalid"], [data-status="map_mismatch"]) { color: var(--odin-error); }
+.odin-pose-heading button { min-height: 26px; padding: 1px 8px; }
+.odin-coords { gap: 4px 14px; }
+.odin-coords span { white-space: nowrap; }
+.odin-coords b { font: inherit; color: var(--odin-muted); }
+
+/* 标记锚点与投影坐标重合。方向线和来源标签独立于底图颜色，保持高对比度。 */
 .odin-marker { position: absolute; width: 0; height: 0; pointer-events: none; }
-.odin-marker svg { position: absolute; left: -24px; top: -24px; overflow: visible; filter: drop-shadow(0 1px 2px #082527); }
-.odin-marker path { fill: none; stroke: #6ffff0; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
-.odin-marker circle { fill: #0d9187; stroke: #e7fff8; stroke-width: 2.5; }
-.odin-marker > span { position: absolute; left: 8px; top: 12px; white-space: nowrap; padding: 2px 5px; border-radius: 4px; color: #b4fff6; background: #102d32e8; font-size: 11px; }
-.odin-pose { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 10px; padding: 8px 12px; background: #f6faf7; color: #425f53; font-size: 11px; }
-.odin-pose-heading, .odin-coords { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 9px; }
-.odin-pose-heading > span { display: inline-flex; align-items: center; gap: 4px; }
-.odin-pose-heading i { width: 6px; height: 6px; border-radius: 50%; background: #a2864c; }
-.odin-pose-heading .live i { background: #008e7b; }
-.odin-pose-heading button { color: #126550; border: 1px solid #96b3a9; min-height: 22px; padding: 1px 6px; }
-.odin-coords { font-variant-numeric: tabular-nums; }
+.odin-marker svg { position: absolute; left: -24px; top: -24px; overflow: visible; filter: drop-shadow(0 1px 2px #0a1025); }
+.odin-marker path { fill: none; stroke: var(--odin-accent); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.odin-marker circle { fill: #515fb1; stroke: #f4f5ff; stroke-width: 2.5; }
+.odin-marker > span {
+  position: absolute;
+  left: 8px;
+  top: 12px;
+  padding: 2px 6px;
+  border: 1px solid #7281ae;
+  border-radius: 4px;
+  white-space: nowrap;
+  color: #e0e6ff;
+  background: #242e50f2;
+  font-size: 11px;
+}
+
+@container cockpit (max-width: 620px) {
+  .odin-viewport .odin-gestures { display: none; }
+  .odin-tools { right: 8px; bottom: 8px; }
+  .odin-source, .odin-pose { padding-inline: 12px; }
+}
+@media (pointer: coarse) {
+  .odin-viewport .odin-gestures { display: none; }
+  .odin-tool-group button { min-height: 42px; min-width: 42px; }
+}
 </style>

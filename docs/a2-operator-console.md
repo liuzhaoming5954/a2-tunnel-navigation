@@ -1,114 +1,130 @@
 # A2 上位机
 
-Vue 3 工作台以巡检驾驶舱为首页，维护遥控位于独立页面。Python 网关提供同源 HTTP 接口，构建后的工作台可在本地离线运行。机载系统负责离线巡检和运动授权。
+巡检驾驶舱部署在操作员使用的上位机。PC2 默认通过两个只读接口传回机器人本体状态和 ODIN1 传感器地图位姿。两端显式启用单点导航后，操作员还可下发或取消一个地图目标。上位机在浏览器内绘制点云、位置与航向，统一提供业务页面。更新界面时只需重新构建并替换上位机的前端资源。[设计方案](design/a2-operator-console-design.md)
 
-巡检业务页面的规划、交互流程和分期验收见[上位机设计方案](design/a2-operator-console-design.md)。
+| 运行位置 | 持有的数据或文件 | 对外提供的内容 |
+| --- | --- | --- |
+| 上位机 | Vue 构建产物、展示点云及其清单，可选的二维栅格 YAML 和相邻 PGM | 本地驾驶舱网页、地图资源和浏览器使用的同源 HTTP 接口 |
+| PC2 | ODIN1 驱动及已加载的厂商 BIN、位姿观测文件、平台状态发布器 | 机器人只读状态和经地图与时效校验的 ODIN1 实时位姿 |
+| 上位机浏览器 | 由上位机 HTTP 服务提供的页面和地图 | 绘图、查看详情、切换视角与数据来源 |
 
-## 启动模拟操作台
+2026-11-21 本轮变更仅在开发机完成程序调整与离线检查。两台机器的实机联调留至下午现场进行。此前 11 月 19 日的实测为旧版同机部署方式的记录。[历史实测记录](implementation-status.md#巡检驾驶舱)
 
-在工程根目录用 Node.js 22 和 Python 3.10 或更新版本执行。
+## 在上位机启动驾驶舱
+
+从源码启动时，先在工程根目录构建前端。开发环境使用 Node.js 22 和 Python 3.10 或更新版本。使用已构建的上位机离线包时，可以直接进入解压目录运行 Python 入口。
 
 ```bash
 npm ci --prefix src/a2_gateway/web
 npm run build --prefix src/a2_gateway/web
-python3 scripts/run_a2_console.py
+python3 scripts/run_a2_console.py --role station
 ```
 
-打开[巡检驾驶舱](http://127.0.0.1:8765/#/cockpit)。「巡检态势地图」位于标题下方，占满工作区宽度，默认显示「ODIN1 点云」。状态卡、当班任务和告警位于地图下方。拖动旋转，使用滚轮或缩放按钮查看局部，点击「俯视」可从上方查看地图。图中保留源 PCD 颜色，面板标明文件名、展示点数和原始点数。接入 PC2 后，圆点标出 ODIN1 的 IMU 原点，箭头表示传感器 +X 轴在地图 XY 平面内的朝向。机身安装偏移待确认。
+启动程序默认角色为 `station`。在上位机浏览器打开[巡检驾驶舱](http://127.0.0.1:8765/#/cockpit)。上位机 HTTP 服务默认监听本机 `127.0.0.1:8765`，默认从本机 `127.0.0.1:8766` 读取 PC2 数据。未接设备时仍可打开网页、查看本地地图。实时状态与位姿随连接及观测有效性显示。上游不可用时不会以模拟器代替实际数据。
 
-网关从受控目录 `maps/odin1/preview/` 读取配套的 `metadata.json` 和 `points.bin`。浏览器先读取 `/api/maps/odin1/metadata`，再携带清单中的样本版本读取 `/api/maps/odin1/points`。现场点云独立于前端构建和通用发布包。在其他工作区部署时，可将这对文件放在网关默认目录，或用 `--odin1-map-dir` 指定其所在目录。文件缺失时，补齐后点击「重新加载」即可。
+静态三维点云默认位于上位机的 `maps/odin1/preview/`。若目录不同，通过 `--odin1-map-dir` 指定。需要二维地图时，额外传入 `--map-yaml` 并将配套 PGM 放在 YAML 引用的位置。下面的环境变量分别指向上位机存放点云的目录和二维地图的 YAML 文件。省略 `--map-yaml` 即可只使用实测点云和合成示意场景。
 
-展示文件采用固定记录格式。`points.bin` 每点占 16 字节，前 12 字节是按小端序存储的三个 float32 坐标，接着是 R、G、B 三个颜色字节和一个填充字节。`metadata.json` 中的 `sourceName`、`sourcePoints`、`pointCount` 分别记录源 PCD 文件名、原始点数和抽样点数。`strideBytes` 为 16，`encoding` 为 `xyz-f32le-rgba-u8`，`sampleSha256` 取自展示文件本身。`viewBounds.min` 和 `viewBounds.max` 是初始取景所用的三维坐标范围。
+```bash
+python3 scripts/run_a2_console.py --role station \
+  --odin1-map-dir "$ODIN1_DISPLAY_DIR" --map-yaml "$A2_LOCAL_MAP_YAML" \
+  --pc2-url http://127.0.0.1:8766
+```
 
-切到「示意场景」可查看合成管廊、机身和巡检点位。点击本体、充电仓、任务或告警可看详情，从演示任务或告警选择关联点会进入该场景。切到「二维栅格」可查看网关地图和与其匹配的机身位姿。
+来源清单 `metadata.json` 与抽样文件 `points.bin` 应配套保存。每个点占 16 字节，含小端 float32 的 XYZ、RGB 和一个填充字节。清单的 `sampleSha256` 校验展示样本，`relocMapSha256` 关联该点云对应的厂商重定位 BIN。浏览器请求 `/api/maps/odin1/metadata` 后携带样本版本请求 `/api/maps/odin1/points`。文件缺失时，补齐后可点击「重新加载」。
 
-| 驾驶舱信息 | 如何识别数据来源 |
+| 驾驶舱信息 | 来源与显示 |
 | --- | --- |
-| 本体、电量、位姿和二维栅格 | 来自当前 Python 网关。默认启动标记为「网关模拟」，接入 ROS 时按连接模式标明实机来源。缺测电量和过期位姿显示未知。 |
-| ODIN1 三维点云 | 本地实测 PCD 的静态抽样，地图来源独立于网关遥测模式。 |
-| ODIN1 传感器位置和航向 | 来自 PC2 同一设备时刻的重定位观测，面板显示地图坐标（米）和航向（度）。等候输入、位姿过期或地图不匹配时撤下标记。 |
-| 示意场景、三维机身和示例点位 | 本地合成示意，与网关地图使用独立坐标。 |
-| 充电仓、当班任务、告警 | 本地模拟样例。演示阅处只影响当前页面；「数据来源」可切换为仅查看已接入数据。 |
+| 本体、电量和运动状态 | 上位机转取 PC2 的只读平台状态。原厂发布者没有有效数据时，对应读数显示未知。 |
+| ODIN1 点云、二维栅格 | 上位机本地地图。点云面板显示原始文件名、抽样点数和原始点数。 |
+| ODIN1 传感器位置及航向 | PC2 同图重定位。圆点对应传感器 IMU 原点，箭头对应传感器 +X 轴在地图 XY 平面内的投影。机身安装外参有待量测。 |
+| 示意场景与点位 | 本地合成场景，可从示例任务或告警跳转到关联点位。 |
+| 充电仓、任务和告警 | 上位机默认仅显示已接入数据。可在「数据来源」开启已标明来源的本地模拟业务，独立模拟角色默认展示样例。 |
 
-导航支持直接打开链接、刷新和浏览器前进／后退。其余业务页面已预留入口并标为待接入。需要测试模拟遥控时打开[维护遥控](http://127.0.0.1:8765/#/maintenance)，点击「启用控制」后按住页面方向按钮或 W、A、S、D。松开会停下模拟机器人并解除会话，也可点击「停止并解除」。离开维护页、窗口失焦、断连或会话到期时解除控制，停止请求未获确认时继续显示状态。模拟速度限值用于联调。
+## 启动模拟操作台
 
-开发界面时可保持网关运行，在另一个终端执行 `npm run dev --prefix src/a2_gateway/web`，Vite 将 `/api` 转发到 8765。
+纯软件演示时，在上位机显式选择 `simulator`。使用独立端口可与正常驾驶舱同时运行。
+
+```bash
+python3 scripts/run_a2_console.py --role simulator --port 8775
+```
+
+打开[模拟驾驶舱](http://127.0.0.1:8775/#/cockpit)或[模拟维护遥控](http://127.0.0.1:8775/#/maintenance)。模拟控制启用后，可按住方向按钮或 W、A、S、D。松开、离开维护页、窗口失焦或会话超时后，既有解除逻辑结束控制。开发界面时可在默认 8765 端口运行所需角色，再执行 `npm run dev --prefix src/a2_gateway/web`。Vite 将同源 `/api` 请求转至本机 8765。
+
+### 两点模拟巡检
+
+启动开发机模拟器后，进入「巡检作业 → 任务管理」，也可以直接打开[两点模拟巡检](http://127.0.0.1:8775/#/tasks)。在合成地图坐标系内分别填写两个点的 X、Y（米）和停留时间（秒），点击「下发两点巡检」。页面使用同一任务 ID 分两次下发，收到点 1 的受理回执后再发点 2。
+
+默认点位位于同一条直通道。模拟器从 `(−4.85, −1.10)` 起步，按顺序去 `(−4.15, −1.10)` 和 `(−3.45, −1.10)`，默认分别停留 2 秒和 4 秒。到点容差为 0.02 米。进入容差后先停车，模拟机身线速度和角速度连续 0.20 秒为零才开始计时。点 1 停留结束后才会向点 2 出发，点 2 停留结束后任务完成。
+
+执行记录保留每个点的接收、出发、到达、停稳和停留结束时刻。相减「停留结束」与「已停稳」的任务用时即可复核每点的停留时长。网页刷新后会重新读取当前任务。如果点 1 已接收而点 2 下发失败，可以修改未接收的点并继续下发。任务由模拟进程在后台执行，重启模拟进程会清空本轮任务。点间按直线行进，遇到合成地图中的障碍会停下并报告失败。
+
+## 上位机与 PC2 离线打包
+
+单点导航在上位机与 PC2 两端均通过 `--enable-single-goal` 单独启用。按[PC2 单点导航](pc2-single-goal.md)准备配对地图、机身外参和导航执行端，再在任务管理页查询就绪状态。
+
+在开发机分别打包。上位机包应在 Vue 构建成功后生成。PC2 包含只读服务、采集器、平台状态发布脚本和接口定义。两个包都将现场地图作为独立配置。
+
+```bash
+mkdir -p artifacts
+python3 scripts/package_a2_console.py --role station --output artifacts/a2-station.zip
+python3 scripts/package_a2_console.py --role pc2 --output artifacts/a2-pc2-data.zip
+```
+
+打包命令省略 `--role` 时生成 PC2 包。请使用新的输出文件名。在各自目标目录解压相应包并执行 `sha256sum -c SHA256SUMS`。点云和二维栅格配置在上位机。厂商重定位 BIN 和驱动日志位于 PC2 的受控目录。[维护连接与传输](a2-connection.md)
 
 ## 将 PC2 的 ODIN1 实时重定位叠加到点云
 
-先在 PC2 按[已验证的载图和重定位流程](development.md#32-pc2-上的-odin1-两点重定位)启动对应的厂商驱动。驱动的标准输出和标准错误写入本次会话独立的 `driver.log`。点云目录中的 `metadata.json` 需要登记 `relocMapSha256`，值为与该 PCD 配对的厂商 BIN 的 SHA-256。现场地图、标定和状态文件均留在受控目录。
+以下是下午有设备时的只读联调步骤。本次程序调整未执行这些现场操作。
 
-在 **PC2 的驱动环境**中另开终端，加载相同的 ROS 2、RMW 和 ROS 域配置。将下面的变量设置为本轮使用的 BIN 绝对路径、驱动日志路径和可写的私有状态目录。以运行驱动的用户启动只读采集器。
+1. **在 PC2 启动并核对 ODIN1 定位观测。** 在设备驱动所属环境按既有流程载入与上位机点云配对的 BIN，启用重定位，保留当次会话的驱动日志。在相同 ROS 域和 RMW 环境运行只读采集器。变量依次指向现场 BIN、当次驱动日志和可写会话目录。[既有重定位流程](development.md#32-pc2-上的-odin1-两点重定位)
 
-```bash
-python3 scripts/observe_odin1_pose.py --map-bin "$ODIN1_ACTIVE_BIN" \
-  --driver-log "$ODIN1_DRIVER_LOG" --output "$ODIN1_SESSION_DIR/pose.json"
-```
+   ```bash
+   python3 scripts/observe_odin1_pose.py --map-bin "$ODIN1_ACTIVE_BIN" \
+     --driver-log "$ODIN1_DRIVER_LOG" --output "$ODIN1_SESSION_DIR/pose.json"
+   ```
 
-在 **同一台 PC2 的上位机环境**中启动网关。如下例采用已有的只读 ROS 遥测环境；网关使用的 ROS 域可与 ODIN1 驱动域不同。若使用下文的只读启动脚本，可通过 `A2_ODIN1_MAP_DIR` 和 `A2_ODIN1_POSE_FILE` 传入同样的路径。
+2. **在 PC2 启动只读数据接口。** 加载与平台状态发布者相同的 ROS 2、`a2_interfaces` 工作区及 ROS 域。若 `/a2/platform/state` 已有发布者，直接运行以下命令。PC2 仅订阅平台状态，ODIN1 的观测器可在另一 ROS 域工作。
 
-```bash
-python3 scripts/run_a2_console.py --ros --host 127.0.0.1 \
-  --odin1-map-dir "$ODIN1_DISPLAY_DIR" --odin1-pose-file "$ODIN1_SESSION_DIR/pose.json"
-```
+   ```bash
+   python3 scripts/run_a2_console.py --role pc2 --host 127.0.0.1 --port 8765 \
+     --odin1-pose-file "$ODIN1_SESSION_DIR/pose.json"
+   ```
 
-开发机通过维护 SSH 本地端口转发访问 PC2 网关。采集器从本次驱动日志确认已加载的地图和重定位模式，按设备时间戳配对 `/odin1/odometry` 与动态 `/tf`，以 `inverse(T_odom_map) × T_odom_imu` 计算传感器地图位姿。网关在 PC2 上用同次系统启动的单调时钟判断时效，默认有效期 750 毫秒。浏览器请求 `/api/maps/odin1/pose?version=<点云样本的 SHA-256>` 并在位姿到期时撤下标记。
+   若同时需要启动原厂 SDK 只读状态发布器，在已核对 `A2_SDK_NIC`、`A2_SDK_DOMAIN_ID`、`A2_ROBOT_ID` 并加载对应原厂 Python SDK 后，改用 `A2_ODIN1_POSE_FILE="$ODIN1_SESSION_DIR/pose.json" bash scripts/start_a2_console_readonly.sh`。脚本会启动状态发布器和 PC2 数据接口。
 
-验收时可先让 A2 静止，将页面 XYZ 和航向与 PC2 同时刻的读数对照，在已知点核对图上位置。切到俯视再旋转地图，箭头应始终指向同一地图方向。停止采集或断开转发后，页面应撤下标记并保留已加载的点云。
+3. **在上位机建立维护通道。** `A2_SSH_TARGET` 指已核对的 PC2 SSH 目标。需要经过 PC4 时按现场配置使用 SSH 跳板。此命令将**上位机的 8766** 接至 **PC2 的 8765**。保留该连接，在另一个终端运行上文的 `station`，浏览器仍打开上位机的 8765。
 
-## 接入 ROS 2 遥测
+   ```bash
+   ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:8766:127.0.0.1:8765 "$A2_SSH_TARGET"
+   ```
 
-加载与实机一致的 ROS 2 环境和已构建的 `a2_interfaces`，再执行下例。先在目标 ROS 图中核对实际话题、坐标系、QoS 和机内网卡。下列名称是项目默认输入。
+4. **核对两项数据。** PC2 的 `GET /api/robot/state` 提供平台状态，`GET /api/odin1/pose?map_sha256=<BIN摘要>` 提供 ODIN1 观测结果。PC2 角色不提供网页、地图下载或运动控制。上位机依据本地清单确认浏览器点云版本，取其配对的 BIN 摘要请求位姿。PC2 检查观测器记录的实际 BIN、系统启动标识和接收时间，按本机单调时钟应用 750 毫秒有效期。浏览器从上位机同源接口取得位姿并在有效期结束时撤下标记。
 
-```bash
-python3 scripts/run_a2_console.py --ros \
-  --map-topic /map --odom-topic /odom --platform-topic /a2/platform/state \
-  --map-frame map --odom-frame odom --base-frame base_footprint
-```
+5. **在 A2 静止时对照读数。** 核对上位机显示的机器人状态、传感器 XYZ 与航向和 PC2 同时刻的观测。切换俯视或旋转地图，检查箭头方向随相机正确投影。断开转发后，静态地图应继续可操作，过期位置应撤下。恢复后须收到新鲜且同图的观测才能重新显示。
 
-地图使用 `nav_msgs/OccupancyGrid`。位姿按里程计采样时刻查 `map → odom → base_footprint`，网关将其关联到当前栅格。电量、速度和模式使用 `a2_interfaces/PlatformState` 的有效标记。过期或缺失字段在界面显示为不可用。实机实时显示依赖已启动的机载发布者与维护连接。订阅配置可通过 `--help` 查看。
+## 历史实机记录
 
-已有建图产物可使用同一套 `map.yaml` 和 PGM，由机载地图服务加载后发布 `/map`。定位进程需使用这套地图对应的建图数据和坐标系，才能在界面上正确叠加机身位姿。[地图导出与目标点验证](a2-goal-validation.md)
-
-## PC2 只读部署
-
-开发机完成 Vue 构建后，用已核对的地图生成离线包。包内有静态页面、Python 工具、接口源码和所选地图。地图随维护包传到机器人，保存在受控目录。[维护连接与传输](a2-connection.md)
-
-```bash
-python3 scripts/package_a2_console.py --map "$A2_LOCAL_MAP_YAML" \
-  --output artifacts/a2-console-readonly.zip
-```
-
-在 PC2 的新候选目录解压，执行 `sha256sum -c SHA256SUMS`。加载 PC2 的 ROS 2 和本机编译的 `a2_interfaces`，把原厂 Python SDK 目录加入 `PYTHONPATH`。如需构建接口，可在候选目录运行 `colcon build --base-paths src/a2_interfaces --packages-select a2_interfaces`，再加载 `install/local_setup.bash`。
-
-以下命令在已加载环境的 PC2 候选目录执行。按本轮配置导出 `A2_SDK_NIC`、`A2_SDK_DOMAIN_ID`、`A2_ROBOT_ID`，并设置供 PC2 本机显示链使用的 `A2_DISPLAY_DOMAIN_ID`。原厂 SDK 使用自己的网卡和域，状态接收放在独立进程。
-
-```bash
-ROS_DOMAIN_ID="$A2_DISPLAY_DOMAIN_ID" ROS_LOCALHOST_ONLY=1 A2_MAP_YAML="$PWD/data/map.yaml" \
-  bash scripts/start_a2_console_readonly.sh
-```
-
-启动脚本一起运行只读状态发布器、占据栅格发布器和回环网关。前台执行时可按 Ctrl+C 停止三个服务。通过认证的 SSH 本地转发访问网关，经过 PC4 时将其作为 SSH 跳板。用 `/api/state` 核对 `robot.online` 和 `robot.telemetry_stamp_ms`，用 `/api/map` 核对地图尺寸和坐标系。接入连续定位时，定位、地图和网关须使用一致的 ROS 域和地图坐标，先核对各话题的发布者与 TF。
-
-原厂状态桥当前只标记已核对的运控模式字段。未验证的电量和速度显示为未知。
+2026-11-12 的旧只读包在 PC2 同时运行网页、栅格发布器和原厂状态桥。2026-11-19 在这种部署中验证了 25 组静止位置与航向观测。以下连续定位和运动仲裁资料保留用于回查当时的验证方法。现行双端数据链使用上一节的两个只读接口。[开发进度](implementation-status.md)
 
 ## 连续定位联调
 
-在所选地图的可识别参考点停稳后，使用实时点云与惯导建立本轮锚定。定位桥要求报告的留出扫描验证通过，报告中的扫描时间戳必须出现在同一运行中 DLIO 的日志，地图文件也须与导出摘要一致。保持该 DLIO 进程连续运行，在 PC2 加载它的 ROS 环境后接入显示。
+在原建图起点停稳后，使用实时点云与惯导建立本轮 `ring-02` 锚定。定位桥要求报告的留出扫描验证通过，报告中的扫描时间戳必须出现在同一运行中 DLIO 的日志，地图文件也须与导出摘要一致。保持该 DLIO 进程连续运行，在 PC2 加载它的 ROS 环境后接入显示。
 
 ```bash
 python3 scripts/publish_a2_localization.py \
   --anchor-report "$A2_LIVE_ANCHOR_REPORT" --dlio-log "$A2_LIVE_DLIO_LOG" \
   --dlio-pid "$A2_LIVE_DLIO_PID" --map-yaml "$A2_CONSOLE_MAP_YAML" \
   --map-manifest "$A2_CONSOLE_MAP_MANIFEST" --extrinsics "$A2_LIDAR_EXTRINSICS" \
-  --output-domain "$A2_DISPLAY_DOMAIN_ID"
+  --output-domain 63
 ```
 
-定位桥从原厂域读取诊断 DLIO，经独立进程在隔离显示域发布 `/odom` 和 `map → odom → base_footprint`，使用原始扫描时间戳。机身位置和朝向按提供的前雷达外参换算。源中断、进程重启、坐标冲突或地图不符会使定位停止更新，页面将过期位姿标为无数据。恢复时使用新锚定。[机身定位与验证方法](a2-goal-validation.md)
+定位桥从原厂域读取诊断 DLIO，经独立进程在隔离显示域发布 `/odom` 和 `map → odom → base_footprint`，使用原始扫描时间戳。机身位置和朝向按提供的前雷达外参换算。试验使用原厂结构外参，现场安装偏差和地图绝对精度待量测。源中断、进程重启、坐标冲突或地图不符会使定位停止更新，页面将过期位姿标为无数据。恢复时使用新锚定。[机身定位与验证方法](a2-goal-validation.md)
 
 ### 静止波动与终点匹配复测
 
-同一停姿下重新匹配时，取证工具使用 `--probe` 指定受信任的本地定位诊断脚本。探针和它的辅助模块由本地诊断环境提供。输出包含扫描、拟合候选、时间戳、里程计变换和校验摘要，保存在现场受控目录。录包回放仍可使用点云与 IMU 短包。[实机录包指南](mapping-capture.md)
+候选版 DLIO 增加了静止配准保护。连续三帧独立扫描配准及陀螺仪确认近静止后，将主、备候选与独立估计的平移差限制为 2.5 厘米。大偏差时可以尝试用独立估计生成候选，候选须通过现有子地图几何检验。静止证据失效即恢复原运动门槛。补丁默认关闭，在候选构建的 `recalculate` 模式下用 `-p diagnostic/stationary_registration_guard:=true` 启用。[候选构建说明](../third_party/README.md#dlio-静止配准候选补丁)
+
+同一停姿下重新匹配时，用已有 `probe_map_anchor.py` 和取证入口保存本轮扫描及每个拟合候选的结果。保留原始点云、过滤后点云、时间戳、里程计变换和校验摘要。保存文件放在现场受控目录。点云与 IMU 短包仍用于完整 DLIO 回放。[实机录包指南](mapping-capture.md)
 
 ```bash
 python3 scripts/record_a2_anchor_evidence.py live --probe "$A2_ANCHOR_PROBE" \
@@ -136,17 +152,11 @@ python3 scripts/record_a2_anchor_evidence.py replay --probe "$A2_ANCHOR_PROBE" \
   --reference-dlio-log "$A2_EARLIER_DLIO_LOG"
 ```
 
-补充参考来自同一地图下已锚定的独立录包。程序通过采样与地图摘要、锚定报告及 DLIO 日志的精确时间戳配对核对来源，并检查参考与查询的采样时间。该入口生成离线报告。
+补充参考需要来自同一地图下已锚定的独立录包。程序通过采样与地图摘要、锚定报告及 DLIO 日志的精确时间戳配对核对来源，并检查参考和查询的采样时间不重叠。补充视角单独按 40 厘米体素参与检索，原地图继续用原分辨率和候选名额。两路候选共同执行原几何门槛、歧义和留出检查。该入口只生成离线报告。
 
 ## 实机运动接入
 
-当机载运动仲裁、避障、底盘桥接和接收端失联停车已联调，可在 ROS 模式下增加 `--motion-socket /absolute/path/to/arbiter.sock`。网关在回环地址运行，浏览器可在同一主机打开，维护时也可使用 SSH 本地端口转发。实际运动权限、限值、会话有效期和底盘断流处理由机载仲裁与接收端负责。当前仓库的实机运动仲裁和底盘指令桥待集成，现有 A2 实机接入范围为只读遥测。
-
-若网关运行在机载维护主机，开发机可以将本地 8766 端口转发到机载网关。设置 `A2_SSH_TARGET` 为实际 SSH 用户名和维护地址，保留该终端，再打开 [转发后的操作台](http://127.0.0.1:8766/)。
-
-```bash
-ssh -N -L 127.0.0.1:8766:127.0.0.1:8765 "$A2_SSH_TARGET"
-```
+原单机维护台为后续试验预留了本地运动仲裁协议，下表为既有接口约定。当前上位机与 PC2 的部署仅交换只读数据，模拟遥控请使用上文的 `simulator` 角色。实机运动需要另行验证机载仲裁、避障、底盘桥接和接收端失联停车。
 
 Unix 套接字使用一问一答的换行 JSON。网关发出 `schema_version: 1`，每次连接传送一个请求，服务端返回带布尔值 `ok` 的单行响应。服务端进程须以网关同一账号或 root 运行。
 
@@ -159,10 +169,10 @@ Unix 套接字使用一问一答的换行 JSON。网关发出 `schema_version: 1
 
 仲裁服务不可达、拒绝请求或未确认接收端停车时，界面显示控制不可用。操作页面与遥控会话的断开处理属于维护模式，离线自主任务继续使用其独立授权。[首次受控运动与停车验证](a2-first-motion-test.md)
 
-## 本机联调检查
+## 开发机单元检查
 
 ```bash
-PYTHONPATH=src/a2_gateway python3 -m unittest discover -s src/a2_gateway/test -v
+PYTHONPATH=src/a2_gateway:src/a2_navigation python3 -m unittest discover -s src/a2_gateway/test -v
 ```
 
-测试覆盖 HTTP 接口、模拟超时停车和本地仲裁接口的授权响应。浏览器验证可以使用模拟地图检查缩放、键鼠操作、松手和失焦。实机运动和停车按照现场验证流程执行。
+开发机使用合成输入检查网关接口和数据失效处理，现场部署与运动验收另行记录。
