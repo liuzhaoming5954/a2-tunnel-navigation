@@ -27,8 +27,13 @@ odin_args=()
 if [[ -n "${A2_ODIN1_POSE_FILE:-}" ]]; then
   odin_args+=(--odin1-pose-file "$A2_ODIN1_POSE_FILE")
 fi
+watchdog_args=()
+if [[ -n "${WATCHDOG_USEC:-}" && -n "${NOTIFY_SOCKET:-}" ]]; then
+  # 正式只读单元配置看门狗。手工启动仍可用于联调。
+  watchdog_args=(--watch-platform-stream)
+fi
 python3 "$root/scripts/run_a2_console.py" --role pc2 --host 127.0.0.1 \
-  --port "${A2_CONSOLE_PORT:-8765}" "${odin_args[@]}" &
+  --port "${A2_CONSOLE_PORT:-8765}" "${odin_args[@]}" "${watchdog_args[@]}" &
 children+=("$!")
 
 # 任一必需的子进程退出时，结束本次维护会话并清理其他子进程。

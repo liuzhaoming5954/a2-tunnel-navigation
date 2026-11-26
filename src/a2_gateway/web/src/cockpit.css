@@ -25,6 +25,7 @@
   outline: 2px solid var(--ic-focus);
   outline-offset: 2px;
 }
+.ic-parking-state { display: flex; flex-wrap: wrap; align-items: center; column-gap: 10px; }
 .ic-workbench {
   display: grid;
   grid-template-columns: minmax(0, 1fr) clamp(260px, 23.333vw, 390px);
@@ -207,8 +208,8 @@
 /* 读取实时接口的摘要和右侧样例各有自己的来源，样例不会替代底盘遥测。 */
 .ic-kpis {
   display: grid;
-  grid-template-columns: 1.04fr 1.1fr .95fr 1fr 1fr;
-  min-height: 78px;
+  grid-template-columns: .88fr .95fr repeat(2, minmax(156px, 1.35fr)) repeat(2, .75fr);
+  min-height: 88px;
   margin-top: 17px;
   border-top: 2px solid #969c9e;
   border-bottom: 1px solid #45494a;
@@ -245,6 +246,19 @@
 .ic-kpi strong { font-size: 17px; font-weight: 650; letter-spacing: .04em; }
 .ic-kpi .ic-reading { font: 600 22px/1.2 var(--ic-mono); }
 .ic-kpi small { margin-left: 6px; color: #a6afb2; font: 11px "Noto Sans CJK SC", sans-serif; }
+.ic-kpi .ic-kpi-link { font-size: 11px; }
+.ic-kpi .ic-yaw-rate b { color: var(--ic-ink); font: 600 11px var(--ic-mono); white-space: nowrap; }
+.ic-sim-battery { grid-column: span 2; }
+/* 每块电池使用独立的表头和读数，保持主、副包在摘要中的排列顺序。 */
+.ic-pack { align-self: stretch; align-content: center; gap: 4px; padding: 8px clamp(10px, 1.1vw, 18px); }
+.ic-pack .ic-pack-head, .ic-pack-stats { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+.ic-pack .ic-pack-head b { color: var(--ic-ink); font-size: 14px; font-weight: 650; }
+.ic-pack .ic-reading { color: var(--ic-ink); }
+.ic-pack .ic-reading small { margin-left: 2px; }
+.ic-pack .ic-pack-stats, .ic-pack .ic-pack-charge { font-size: 11px; }
+.ic-pack-stats { flex-wrap: wrap; column-gap: 8px; row-gap: 0; }
+.ic-pack-stats > span { white-space: nowrap; }
+.ic-pack-stats b, .ic-pack-charge b { color: var(--ic-ink); font-weight: 500; }
 
 /* 原生对话框保留键盘焦点与 Escape 关闭，操作沿用同一套状态色。 */
 .ic-dialog {
@@ -266,6 +280,19 @@
 .ic-dialog dl > div, .ic-detail-row { display: flex; justify-content: space-between; gap: 14px; padding: 11px 0; border-bottom: 1px solid #42484c; font-size: 13px; }
 .ic-dialog dt { color: var(--ic-muted); flex-shrink: 0; }
 .ic-dialog dd { text-align: right; overflow-wrap: anywhere; }
+.ic-instrument + .ic-instrument { margin-top: 16px; }
+.ic-instrument h3 { font-size: 14px; font-weight: 650; }
+.ic-instrument small { font-size: 11px; color: var(--ic-muted); font-weight: 400; }
+.ic-instrument h3 small { margin-left: 4px; }
+.ic-instrument dl.ic-axis-grid {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 7px 0 0;
+  border: 1px solid var(--ic-line); background: #252a2e;
+}
+.ic-instrument .ic-axis-grid > div { display: grid; gap: 4px; padding: 8px 11px; border: 0; }
+.ic-instrument .ic-axis-grid > div + div { border-left: 1px solid var(--ic-line); }
+.ic-axis-grid dt { font-size: 11px; }
+.ic-axis-grid dd { text-align: left; font: 600 18px/1.3 var(--ic-mono); }
+.ic-instrument dl.ic-instrument-row { margin: 0; }
 .ic-dialog p { margin: 9px 0; color: var(--ic-muted); font-size: 13px; line-height: 1.7; }
 .ic-dialog fieldset { padding: 8px 12px; border: 1px solid var(--ic-line); }
 .ic-dialog legend { padding: 0 4px; color: var(--ic-silver); font-size: 12px; font-weight: 600; }
@@ -300,4 +327,8 @@
   .ic-summary-heading { display: flex; align-items: baseline; gap: 10px; grid-column: 1 / -1; padding: 10px 14px; }
   .ic-kpi { margin: 5px 0; padding: 4px 14px; }
   .ic-kpi:nth-of-type(even) { border: 0; }
+  .ic-kpi:not(.ic-pack):not(.ic-sim-battery):first-of-type { grid-column: 1 / -1; border-right: none; }
+  .ic-pack { margin: 0; padding-block: 9px; border-block: 1px solid #45494c; }
+  .ic-kpi.ic-pack:nth-of-type(even) { border: 1px solid #45494c; border-left: 0; }
+  .ic-kpi.ic-pack:nth-of-type(odd) { border-right: 0; }
 }

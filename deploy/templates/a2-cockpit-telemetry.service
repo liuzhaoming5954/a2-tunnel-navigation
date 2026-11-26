@@ -1,0 +1,31 @@
+[Unit]
+Description=A2 cockpit read-only telemetry on PC2
+# 机载网卡与维护无线链路可能先后就绪。开机只依赖本机网络服务。
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+# 与现场已验证的 ROS、SDK 和 USB/网络设备访问权限一致。
+User=unitree
+EnvironmentFile=/etc/a2/cockpit-telemetry.env
+Environment=PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+# SDK 可能在当前目录写诊断文件。运行目录归服务账号所有，每次开机自动创建。
+RuntimeDirectory=a2-cockpit-telemetry
+RuntimeDirectoryMode=0700
+WorkingDirectory=/run/a2-cockpit-telemetry
+ExecStart=/bin/bash /usr/local/libexec/a2-cockpit-telemetry
+NoNewPrivileges=yes
+UMask=0077
+KillMode=control-group
+# 网关子进程只有收到新 ROS 帧才续期。进程仍存在但断流时也恢复该只读单元。
+NotifyAccess=all
+WatchdogSec=15s
+WatchdogSignal=SIGTERM
+TimeoutAbortSec=5s
+# 采集器或 HTTP 进程退出以及看门狗超时均由 systemd 恢复。
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,22 @@
+[Unit]
+Description=A2 原厂手柄优先接管只读反馈
+After=network.target
+
+[Service]
+Type=exec
+DynamicUser=yes
+User=a2-owner-input
+EnvironmentFile=/etc/a2/remote-stop.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+RuntimeDirectory=a2-vendor-owner
+RuntimeDirectoryMode=0755
+WorkingDirectory=/run/a2-vendor-owner
+PrivateTmp=yes
+NoNewPrivileges=yes
+UMask=0077
+ExecStart=/usr/bin/env -- ${A2_STOP_PYTHON} -sB /usr/local/libexec/a2-vendor-owner --interface ${A2_STOP_INTERFACE} --domain ${A2_STOP_DOMAIN}
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target

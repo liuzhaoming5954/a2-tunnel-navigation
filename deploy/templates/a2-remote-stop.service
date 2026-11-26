@@ -1,0 +1,28 @@
+[Unit]
+Description=A2 遥控按钮停车守护
+After=network.target
+
+[Service]
+# 主进程报告监听或锁存状态，并用心跳向 systemd 表明主循环仍在工作。
+Type=notify
+NotifyAccess=main
+WatchdogSec=5s
+TimeoutStopSec=8s
+Environment=PYTHONUNBUFFERED=1
+Environment=A2_STOP_DOMAIN=0
+EnvironmentFile=/etc/a2/remote-stop.env
+ExecStart=/usr/bin/env -- ${A2_STOP_PYTHON} /opt/a2/scripts/a2_remote_stop.py guard --interface ${A2_STOP_INTERFACE} --domain ${A2_STOP_DOMAIN} --button-mask ${A2_STOP_BUTTON_MASK}
+# 系统管理器创建目录。就绪状态随进程消失，停车锁存跨进程重启和主机重启保留。
+RuntimeDirectory=a2-remote-stop
+RuntimeDirectoryMode=0755
+StateDirectory=a2-remote-stop
+StateDirectoryMode=0700
+# 原厂 DDS 固定写 /tmp/cdds.LOG，隔离后不会与维护账户的日志互相占用。
+PrivateTmp=yes
+UMask=0077
+NoNewPrivileges=yes
+Restart=on-failure
+RestartSec=1s
+
+[Install]
+WantedBy=multi-user.target

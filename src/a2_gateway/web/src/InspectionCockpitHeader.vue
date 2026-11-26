@@ -15,11 +15,13 @@ defineEmits(['sources'])
     <div class="inspection-heading">
       <span class="inspection-caption" lang="ru">ПУЛЬТ УПРАВЛЕНИЯ</span>
       <h1>巡检驾驶舱</h1>
+      <slot />
     </div>
-    <!-- 版画是随网页构建分发的装饰资源，读屏和键盘可直接进入数据来源按钮。 -->
+    <!-- 版画只作装饰；进入手动遥控页后仍需由操作员主动启用会话。 -->
     <img class="inspection-mural" :src="plantMural" width="720" height="118" alt="">
     <div class="inspection-actions">
       <time :datetime="dateParts.iso">{{ dateParts.label }}<span>{{ dateParts.weekday }}</span></time>
+      <a class="ic-source-button" href="#/maintenance"><Icon name="gamepad" :size="14" />手动遥控</a>
       <button class="ic-source-button" type="button" aria-haspopup="dialog" @click="$emit('sources')">
         <Icon name="settings" :size="14" />数据来源
       </button>
@@ -65,7 +67,7 @@ defineEmits(['sources'])
   height: 3px;
   border-block: 1px solid #121417;
 }
-.inspection-heading { padding-bottom: 5px; }
+.inspection-heading { min-width: 0; padding-bottom: 5px; }
 .inspection-caption {
   display: flex;
   align-items: center;
@@ -118,6 +120,7 @@ defineEmits(['sources'])
   color: var(--ic-ink, #e0e2dc);
   font: 550 12px/1.45 "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
   white-space: nowrap;
+  text-decoration: none;
 }
 .inspection-actions .ic-source-button:hover { border-color: #b8c0c8; background: #353a40; }
 .inspection-actions .ic-source-button:focus-visible { outline: 2px solid #e04f16; outline-offset: 2px; }

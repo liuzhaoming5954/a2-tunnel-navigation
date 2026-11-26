@@ -1,0 +1,15 @@
+[Unit]
+Description=A2 cockpit authenticated telemetry connection
+# 维护网可以晚于桌面启动或暂时离线，让 systemd 始终按间隔重试。
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+RuntimeDirectory=a2-cockpit-link
+RuntimeDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+# 主连接仅承载同账号的复用会话。主机身份与专用身份文件由独立配置指定。
+ExecStart=/usr/bin/ssh -F %h/.config/a2-cockpit/ssh_config -o ControlPersist=no -M -N -T -S %t/a2-cockpit-link/master a2-cockpit-pc2
+Restart=always
+RestartSec=3s

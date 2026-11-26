@@ -2,15 +2,17 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Icon from './Icon.vue'
 import InspectionCockpitHeader from './InspectionCockpitHeader.vue'
+import ParkingLatchReset from './ParkingLatchReset.vue'
+import RemoteStopStatus from './RemoteStopStatus.vue'
 import MapView from './MapView.vue'
 import OdinPointCloud from './OdinPointCloud.vue'
 import TunnelScene from './TunnelScene.vue'
 import { sampleAlarms, scenePoints, shiftTasks } from './cockpitData.js'
-import { formatImuYawRate } from './yawRate.js'
+import { formatImuYawRate } from './useGateway.js'
 
 const props = defineProps({
   state: { type: Object, default: null },
-  yawRates: { type: Object, default: null },
+  remoteStop: { type: Object, default: null },
   map: { type: Object, default: null },
   mapStatus: { type: String, default: 'idle' },
   connection: { type: String, default: 'connecting' },
@@ -59,9 +61,54 @@ const battery = computed(() => {
   const value = robot.value.battery_percent
   return online.value && Number.isFinite(value) && value >= 0 && value <= 100 ? Math.round(value) : null
 })
-const source = computed(() => station.value ? 'PC2 只读接口' : ({
-  simulator: '网关模拟', robot: '实机网关', robot_readonly: '实机只读',
-})[knownMode.value] || '等待网关')
+// 两个 BMS、运动状态与 IMU 独立采样。PC2 会把过期的数据源置空；
+// 本体模式暂时收不到时，其他仍在更新的通道继续显示各自的实测值。
+const bodyData = computed(() => connected.value && (!station.value || props.state?.pc2_connected === true)
+  ? robot.value : {})
+const hasPreviousReading = computed(() => [
+  bodyData.value.velocity, bodyData.value.attitude,
+  bodyData.value.batteries?.primary, bodyData.value.batteries?.secondary,
+].some(sample => sample?.previous_reading === true))
+const batterySlots = [{ key: 'primary', label: '主电池' }, { key: 'secondary', label: '副电池' }]
+const batteryPacks = computed(() => batterySlots.map(slot => {
+  const pack = bodyData.value.batteries?.[slot.key]
+  return {
+    ...slot,
+    soc: percentReading(pack?.soc_percent),
+    soh: percentReading(pack?.soh_percent),
+    cycles: Number.isInteger(pack?.cycle_count) && pack.cycle_count >= 0 ? pack.cycle_count : '—',
+    charging: pack?.charging === true ? '充电中' : pack?.charging === false ? '未充电' : '未知',
+  }
+}))
+const selectedPack = computed(() => batteryPacks.value.find(pack => pack.key === detail.value?.item))
+
+function percentReading(value) {
+  return Number.isFinite(value) && value >= 0 && value <= 100 ? Math.round(value) : '—'
+}
+// 速度沿用接口单位；IMU 的弧度对操作员展示为度，与 ODIN1 地图航向分别标注。
+function reading(value, digits = 3, scale = 1) {
+  return Number.isFinite(value) ? (value * scale).toFixed(digits) : '—'
+}
+const speedAxes = [
+  { label: 'X 轴', field: 'x_mps' }, { label: 'Y 轴', field: 'y_mps' }, { label: 'Z 轴', field: 'z_mps' },
+]
+// 用同一帧的 X、Y 原厂分量计算平面速度。任一分量缺失时保留未知读数。
+const planarSpeed = computed(() => {
+  const velocity = bodyData.value.velocity
+  if (!Number.isFinite(velocity?.x_mps) || !Number.isFinite(velocity.y_mps)) return null
+  return Math.hypot(velocity.x_mps, velocity.y_mps)
+})
+const attitudeAxes = [
+  { label: '横滚', field: 'roll_rad' }, { label: '俯仰', field: 'pitch_rad' }, { label: '偏航', field: 'yaw_rad' },
+]
+const imuYawRate = computed(() => formatImuYawRate(bodyData.value.imuYaw?.rateRadps))
+const source = computed(() => {
+  if (station.value) {
+    if (props.state.control?.source === 'mock') return 'PC2 模拟底盘'
+    return knownMode.value === 'manual_control' ? 'PC2 遥测接口' : 'PC2 只读接口'
+  }
+  return ({ simulator: '网关模拟', robot: '实机网关', robot_readonly: '实机只读' })[knownMode.value] || '等待网关'
+})
 const gridSource = computed(() => station.value ? '上位机本地栅格' : source.value + ' · 二维地图')
 const robotStatus = computed(() => {
   if (!connected.value) return props.connection === 'connecting' ? '连接中' : '网关离线'
@@ -71,20 +118,21 @@ const robotStatus = computed(() => {
   return online.value ? '在线' : '遥测离线'
 })
 const modeName = computed(() => {
-  if (!online.value || !robot.value.mode) return '未知'
+  if (!online.value || robot.value.mode == null || robot.value.mode === '') return '未知'
   return ({ standing: '站立', walking: '行走', stopped: '停止', idle: '待命' })[robot.value.mode] || String(robot.value.mode)
 })
 const sampleBusiness = computed(() => sourcePolicy.value === 'demo')
 // 源遥测时间与 HTTP 响应时间属于不同观测，页面仅采用遥测自身的时间字段。
 const telemetryTime = computed(() => {
   const stamp = robot.value.telemetry_stamp_ms
-  if (!Number.isFinite(stamp) || stamp <= 0 || stamp > 8.64e15) return '未知'
+  if (!online.value || !Number.isFinite(stamp) || stamp <= 0 || stamp > 8.64e15) return '未知'
   return new Date(stamp).toLocaleString('zh-CN', { hour12: false })
 })
 const businessSource = computed(() => sampleBusiness.value ? '本地模拟' : '未接入')
 // 运行摘要只读网关。右栏选择样例时，不能把演示任务或告警数填入运行摘要。
 const summaryRobot = computed(() => {
   if (!online.value) return '等待遥测'
+  if (/^\d+$/.test(modeName.value)) return '模式 ' + modeName.value
   return modeName.value === '未知' ? '在线' : modeName.value
 })
 // 视图只切换当前地图组件；网关连接由外层工作区维持。
@@ -141,13 +189,24 @@ const detailTitle = computed(() => {
   if (!entry) return ''
   if (entry.type === 'point') return scenePoints[entry.item]?.name
   if (entry.type === 'task' || entry.type === 'alarm') return entry.item.title
+  if (entry.type === 'dock' && selectedPack.value) return selectedPack.value.label + '与充电仓'
   return ({ sources: '数据来源', robot: '机器人本体状态', dock: '电量与充电仓', tasks: '当班任务', alarms: '活动告警', liveTask: '当前任务', liveAlarms: '活动告警' })[entry.type]
 })
 </script>
 
 <template>
   <div class="ic-root">
-    <InspectionCockpitHeader :date-parts="dateParts" @sources="openDetail('sources')" />
+    <InspectionCockpitHeader :date-parts="dateParts" @sources="openDetail('sources')">
+      <div v-if="remoteStop" class="ic-parking-state">
+        <RemoteStopStatus :report="remoteStop" />
+        <ParkingLatchReset
+          v-if="station && state?.control?.source !== 'mock'"
+          :connected="connected && state?.pc2_connected === true"
+          :report="remoteStop"
+          :availability="state?.stop_reset"
+        />
+      </div>
+    </InspectionCockpitHeader>
 
     <div class="ic-workbench">
       <section ref="mapSection" class="ic-map" aria-label="巡检地图">
@@ -222,15 +281,26 @@ const detailTitle = computed(() => {
     <section class="ic-kpis" aria-labelledby="ic-summary-title">
       <div class="ic-summary-heading">
         <h2 id="ic-summary-title">运行摘要</h2>
-        <small>{{ knownMode === 'simulator' ? '网关模拟数据' : '按接口显示' }}</small>
+        <small>{{ knownMode === 'simulator' ? '网关模拟数据' : hasPreviousReading ? '部分为上次读数' : '按接口显示' }}</small>
       </div>
       <button type="button" class="ic-kpi" @click="openDetail('robot')">
-        <span>机器人本体</span><strong>{{ summaryRobot }}</strong>
-        <span v-if="knownMode !== 'simulator'">IMU 转速 {{ formatImuYawRate(yawRates?.imu) }} °/s</span>
+        <span>机器人本体 · {{ summaryRobot }}</span>
+        <strong class="ic-reading">{{ reading(planarSpeed) }}<small>m/s</small></strong>
+        <span class="ic-kpi-link">平面速度估计</span>
+        <span v-if="knownMode !== 'simulator'" class="ic-kpi-link ic-yaw-rate" title="IMU 偏航角差分估计，— 表示暂无有效读数">IMU 转速 <b>{{ imuYawRate }} °/s</b></span>
       </button>
-      <button type="button" class="ic-kpi" @click="openDetail('dock')">
+      <button v-if="knownMode === 'simulator'" type="button" class="ic-kpi ic-sim-battery" @click="openDetail('dock')">
         <span>电池电量</span><strong class="ic-reading">{{ battery ?? '—' }}<small>%</small></strong>
       </button>
+      <template v-else>
+        <button v-for="pack in batteryPacks" :key="pack.key" type="button" class="ic-kpi ic-pack" @click="openDetail('dock', pack.key)">
+          <span class="ic-pack-head"><b>{{ pack.label }}</b><strong class="ic-reading">{{ pack.soc }}<small>%</small></strong></span>
+          <span class="ic-pack-stats">
+            <span>健康度 <b>{{ pack.soh }}%</b></span><span>循环 <b>{{ pack.cycles }} 次</b></span>
+          </span>
+          <span class="ic-pack-charge">充电状态 <b>{{ pack.charging }}</b></span>
+        </button>
+      </template>
       <button type="button" class="ic-kpi" @click="openDetail('liveTask')">
         <span>当前任务</span><strong>未接入</strong>
       </button>
@@ -248,19 +318,40 @@ const detailTitle = computed(() => {
           </fieldset><p>此设置只影响任务、充电仓和告警的演示样例。</p>
         </template>
         <template v-else-if="detail.type==='robot' || detail.type==='dock'">
-          <dl><div><dt>遥测来源</dt><dd>{{ source }} · {{ robotStatus }}</dd></div><div><dt>机器人标识</dt><dd>{{ robot.id || '未知' }}</dd></div>
-            <div><dt>遥测观测时间</dt><dd>{{ telemetryTime }}</dd></div>
+          <dl><div><dt>遥测来源</dt><dd>{{ source }}</dd></div><div><dt>机器人标识</dt><dd>{{ bodyData.id || '未知' }}</dd></div>
             <template v-if="detail.type==='robot'">
-              <div><dt>本体故障</dt><dd>未接入</dd></div>
-              <div><dt>运动模式</dt><dd>{{ modeName }}</dd></div>
-              <div><dt>线速度</dt><dd>{{ online && Number.isFinite(robot.linear_mps) ? robot.linear_mps.toFixed(2) + ' m/s' : '未知' }}</dd></div>
-              <template v-if="knownMode !== 'simulator'">
-                <div><dt>IMU 转速估计</dt><dd>{{ formatImuYawRate(yawRates?.imu) }} °/s</dd></div>
-                <div><dt>原厂偏航角速度</dt><dd>{{ yawRates?.sdk?.toFixed(3) ?? '—' }} rad/s</dd></div>
-              </template>
+              <div><dt>本体遥测</dt><dd>{{ robotStatus }}</dd></div><div><dt>模式观测时间</dt><dd>{{ telemetryTime }}</dd></div>
+              <div><dt>本体故障</dt><dd>未接入</dd></div><div><dt>运动模式</dt><dd>{{ modeName }}</dd></div>
             </template>
-            <template v-else><div><dt>电池电量</dt><dd>{{ battery === null ? '未知' : battery+'%' }}</dd></div><div><dt>充电仓连接</dt><dd>{{ sampleBusiness ? '在线 · 本地模拟' : '未接入' }}</dd></div><div><dt>仓体故障</dt><dd>{{ sampleBusiness ? '无故障 · 本地模拟' : '未接入' }}</dd></div><div><dt>充电仓占用</dt><dd>{{ sampleBusiness ? '空闲 · 本地模拟' : '未接入' }}</dd></div><div><dt>充电状态</dt><dd>{{ sampleBusiness ? '未充电 · 本地模拟' : '未接入' }}</dd></div></template>
-          </dl><button v-if="detail.type==='dock' && sampleBusiness" class="ic-action" type="button" @click="locatePoint('P03')">在场景中查看回仓交接点 →</button>
+          </dl>
+          <template v-if="detail.type==='robot'">
+            <section class="ic-instrument" aria-label="原厂速度估计">
+              <h3>原厂速度估计 <small>{{ bodyData.velocity?.previous_reading ? '上次读数 · m/s' : 'm/s' }}</small></h3>
+              <dl class="ic-axis-grid"><div v-for="axis in speedAxes" :key="axis.field"><dt>{{ axis.label }}</dt><dd>{{ reading(bodyData.velocity?.[axis.field]) }}</dd></div></dl>
+              <dl class="ic-instrument-row">
+                <div><dt>平面速度（X/Y 合成）</dt><dd>{{ reading(planarSpeed) }} <small>m/s</small></dd></div>
+                <div><dt>原厂偏航角速度</dt><dd>{{ reading(bodyData.velocity?.yaw_radps) }} <small>rad/s</small></dd></div>
+                <div v-if="!bodyData.velocity && online && Number.isFinite(robot.linear_mps)"><dt>网关线速度</dt><dd>{{ reading(robot.linear_mps) }} <small>m/s</small></dd></div>
+              </dl>
+            </section>
+            <section class="ic-instrument" aria-label="机身姿态">
+              <h3>机身姿态 <small>{{ bodyData.attitude?.previous_reading ? '上次读数 · IMU · °' : 'IMU · °' }}</small></h3>
+              <dl class="ic-axis-grid"><div v-for="axis in attitudeAxes" :key="axis.field"><dt>{{ axis.label }}</dt><dd>{{ reading(bodyData.attitude?.[axis.field], 2, 180 / Math.PI) }}</dd></div></dl>
+              <dl v-if="knownMode !== 'simulator'" class="ic-instrument-row"><div><dt>转速估计（IMU 偏航角差分）</dt><dd class="ic-yaw-rate">{{ imuYawRate }} <small>°/s</small></dd></div></dl>
+            </section>
+          </template>
+          <template v-else>
+            <dl v-if="selectedPack">
+              <div v-if="bodyData.batteries?.[selectedPack.key]?.previous_reading"><dt>采样状态</dt><dd>上次读数</dd></div>
+              <div><dt>{{ selectedPack.label }}电量</dt><dd>{{ selectedPack.soc }}%</dd></div><div><dt>健康度</dt><dd>{{ selectedPack.soh }}%</dd></div>
+              <div><dt>循环次数</dt><dd>{{ selectedPack.cycles }} 次</dd></div><div><dt>电池充电状态</dt><dd>{{ selectedPack.charging }}</dd></div>
+            </dl>
+            <dl v-if="battery !== null && (!selectedPack || !bodyData.batteries)"><div><dt>网关电池电量</dt><dd>{{ battery }}%</dd></div></dl>
+            <dl><div><dt>充电仓连接</dt><dd>{{ sampleBusiness ? '在线 · 本地模拟' : '未接入' }}</dd></div><div><dt>仓体故障</dt><dd>{{ sampleBusiness ? '无故障 · 本地模拟' : '未接入' }}</dd></div><div><dt>充电仓占用</dt><dd>{{ sampleBusiness ? '空闲 · 本地模拟' : '未接入' }}</dd></div>
+              <div v-if="knownMode === 'simulator'"><dt>充电仓样例状态</dt><dd>{{ sampleBusiness ? '未充电 · 本地模拟' : '未接入' }}</dd></div>
+            </dl>
+            <button v-if="sampleBusiness" class="ic-action" type="button" @click="locatePoint('P03')">在场景中查看回仓交接点 →</button>
+          </template>
         </template>
         <template v-else-if="detail.type==='liveTask' || detail.type==='liveAlarms'">
           <p>{{ detail.type === 'liveTask' ? '巡检任务接口尚未接入，当前任务未知。' : '告警接口尚未接入，活动告警数量未知。' }}</p>

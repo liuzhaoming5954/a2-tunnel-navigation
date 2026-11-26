@@ -4,10 +4,11 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "test": "node --test",
+    "test": "npm run test:manual",
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:manual": "node test/manual-control.mjs"
   },
   "dependencies": {
     "vue": "3.5.24"

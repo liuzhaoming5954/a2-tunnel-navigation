@@ -6,6 +6,8 @@ from hashlib import sha256
 import json
 import logging
 import math
+import os
+import socket
 from threading import Event, Lock, Thread
 import time
 
@@ -17,6 +19,45 @@ _NS_PER_MS = 1_000_000
 _IMU_YAW_MIN_INTERVAL_NS = 25 * _NS_PER_MS
 _IMU_YAW_MAX_INTERVAL_NS = IMU_YAW_RATE_MAX_AGE_MS * _NS_PER_MS
 _LOG = logging.getLogger(__name__)
+
+
+class PlatformStreamWatchdog:
+    """只读网关仍收到新 ROS 帧时，向管理该网关的 systemd 单元发送心跳。"""
+
+    def __init__(self):
+        address = os.environ.get("NOTIFY_SOCKET", "")
+        try:
+            watchdog_us = int(os.environ.get("WATCHDOG_USEC", "0"))
+        except ValueError as exc:
+            raise ValueError("systemd 遥测看门狗间隔无效") from exc
+        if len(address) < 2 or address[0] not in ("/", "@") or watchdog_us <= 0:
+            raise ValueError("需要在启用 systemd 看门狗的 PC2 只读服务中运行")
+        self._address = "\0" + address[1:] if address.startswith("@") else address
+        self._check_interval_ns = min(_NS_PER_S, watchdog_us * 1000 // 3)
+        self._max_frame_age_ns = min(3 * _NS_PER_S, watchdog_us * 1000 // 3)
+        self._next_check_ns = 0
+        self._last_issue = None
+
+    def tick(self, telemetry):
+        now_ns = time.monotonic_ns()
+        if now_ns < self._next_check_ns:
+            return
+        self._next_check_ns = now_ns + self._check_interval_ns
+        issue = telemetry.platform_stream_issue(now_ns, self._max_frame_age_ns)
+        if issue is None:
+            try:
+                # Bash 负责启动和回收进程，单元以 NotifyAccess=all 接受该网关子进程的消息。
+                with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as connection:
+                    connection.setblocking(False)
+                    connection.sendto(b"WATCHDOG=1", self._address)
+            except OSError:
+                issue = "systemd_notification_failed"
+        if issue != self._last_issue:
+            if issue is None:
+                _LOG.info("PC2 只读遥测心跳恢复")
+            else:
+                _LOG.warning("PC2 只读遥测心跳暂停：%s", issue)
+            self._last_issue = issue
 
 
 def _duration(value):
@@ -136,6 +177,7 @@ class RosTelemetry:
         self._platform_session = None
         self._details = None
         self._imu_yaw = None
+        self._details_supported = False
         self._robot_id = None
         self._model = args.robot_model
         self._clock_ns = 0
@@ -162,6 +204,7 @@ class RosTelemetry:
             else:
                 self._node.create_subscription(PlatformDetails, args.platform_details_topic,
                                                self._read_details, sample_qos)
+                self._details_supported = True
             # PC2 的 ODIN1 观测器已独立接收定位消息；只读数据服务只订阅平台遥测，
             # 避免额外创建 /map、/odom 和 TF 订阅，也无需加载导航消息及 TF 库。
             if not platform_only:
@@ -352,6 +395,21 @@ class RosTelemetry:
                 self._pose = self._platform = self._platform_session = self._details = None
                 self._imu_yaw = None
             self._release_ros()
+
+    def platform_stream_issue(self, now_ns, max_age_ns):
+        """判断 PC2 内部 ROS 帧是否持续到达，原厂数据有效性仍由 snapshot 单独判定。"""
+        with self._lock:
+            if self._platform is None:
+                return "platform_frames_missing"
+            # 主循环计算 now 与取得这把锁之间可能刚好收到回调。两端使用同一单调时钟。
+            if now_ns - self._platform[1] > max_age_ns:
+                return "platform_frames_stale"
+            if self._details_supported:
+                if self._details is None or self._details[2] != self._platform_session:
+                    return "details_frames_missing"
+                if now_ns - self._details[1] > max_age_ns:
+                    return "details_frames_stale"
+        return None
 
     def snapshot(self):
         """Return a detached summary without the potentially large map cells."""

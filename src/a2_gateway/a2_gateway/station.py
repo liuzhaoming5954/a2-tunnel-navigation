@@ -9,12 +9,16 @@ import re
 import time
 from urllib.parse import urlsplit
 
+from . import manual_link
+from . import remote_stop_status
+from .manual_link import PC2_STOP_RESET_PATH, valid_stop_reset_confirmation, valid_stop_reset_reason
 from .odin1_pose import MAX_AGE_MS, SOURCE, read_odin_object
 from .platform_details import fresh_details
 
 
 _MAX_RESPONSE_BYTES = 65_536
 _TIMEOUT_SECONDS = 0.8
+_STOP_RESET_TIMEOUT_SECONDS = 24.0
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _GOAL_PATH = "/api/navigation/goal"
 _GOAL_PHASES = {"idle", "sending", "active", "canceling", "succeeded", "canceled", "failed", "uncertain"}
@@ -57,21 +61,57 @@ def _robot_fields(message, elapsed_ms):
     # 断流时可保留设备标识，上一帧的电量、速度与模式不能随离线状态透传。
     if not robot["online"]:
         fields = {key: fields[key] if key in ("id", "model") else None for key in _ROBOT_FIELDS}
-    # IMU 和原厂运动状态来自不同话题。各路按各自的观测时间决定是否转发。
-    # 快照原始年龄交给浏览器，浏览器按整次请求耗时计算显示有效期。
+    # 各路详情独立判定。与 ODIN1 位姿转发相同，站端剔除途中已失效的读数，
+    # age_ms 保留 PC2 创建快照时的年龄，浏览器据此扣除整次请求的往返时间。
     return {**fields, **fresh_details(robot, transfer_ms=elapsed_ms), "online": robot["online"]}
 
 
+def _remote_stop(sample, transfer_ms):
+    """校验独立守护的采样；旧版采集器缺少此字段仍可提供其他遥测。"""
+    maximum = remote_stop_status.MAX_AGE_MS
+    unknown = {"source": remote_stop_status.SOURCE, "guard": "unknown", "latched": None,
+               "age_ms": maximum, "max_age_ms": maximum}
+    if not isinstance(sample, dict) or sample.get("source") != remote_stop_status.SOURCE:
+        return unknown
+    guard, latched = sample.get("guard"), sample.get("latched")
+    age, lifetime = sample.get("age_ms"), sample.get("max_age_ms")
+    if (guard not in ("running", "stopped", "unknown") or (latched is not None and type(latched) is not bool)
+            or type(age) is not int or age < 0 or type(lifetime) is not int
+            or lifetime != maximum or age + transfer_ms >= lifetime):
+        return unknown
+    # 只接受运行中守护对“已解除”的肯定证据。页端会扣除浏览器自己的完整请求耗时，
+    # 因此仅在此用站端往返时间剔除过期样本，原始年龄保持不变。
+    return {"source": remote_stop_status.SOURCE, "guard": guard,
+            "latched": None if latched is False and guard != "running" else latched,
+            "age_ms": age, "max_age_ms": lifetime}
+
+
+def _endpoint(url):
+    # 两个上游地址均由部署者固定；浏览器提供的路径和请求体不能指定目的主机。
+    origin = urlsplit(url)
+    if (origin.scheme != "http" or not origin.hostname or origin.username is not None
+            or origin.path not in ("", "/") or any(c in url for c in ("?", "#", "\\"))
+            or any(c.isspace() or not c.isprintable() for c in url)
+            or origin.netloc.endswith(":") or origin.port == 0):
+        raise ValueError("PC2 地址应为 http://主机:端口，不含路径、查询参数或账号")
+    return origin.hostname, origin.port or 80
+
+
 class StationSource:
-    def __init__(self, pc2_url, map_path=None, *, goal_map_sha256=None):
-        # 上游只接受部署时配置的固定源；不从浏览器请求中解析目标地址。
-        origin = urlsplit(pc2_url)
-        if (origin.scheme != "http" or not origin.hostname or origin.username is not None
-                or origin.path not in ("", "/") or any(c in pc2_url for c in ("?", "#", "\\"))
-                or any(c.isspace() or not c.isprintable() for c in pc2_url)
-                or origin.netloc.endswith(":") or origin.port == 0):
-            raise ValueError("PC2 地址应为 http://主机:端口，不含路径、查询参数或账号")
-        self._host, self._port = origin.hostname, origin.port or 80
+    def __init__(self, pc2_url, map_path=None, *, goal_map_sha256=None, manual_key=None,
+                 manual_pc2_url=None):
+        self._telemetry_endpoint = _endpoint(pc2_url)
+        self._manual_endpoint = _endpoint(manual_pc2_url) if manual_pc2_url is not None else None
+        if self._manual_endpoint is not None and (
+                manual_key is None or not manual_link.loopback(self._manual_endpoint[0])
+                or self._manual_endpoint[1] == self._telemetry_endpoint[1]):
+            raise ValueError("独立遥控通道须使用密钥和单独的回环端口")
+        # 机间密钥仅传入预先建立的本地 SSH 转发端口，不能通过未加密的局域网 HTTP 发出。
+        if manual_key is not None and (not isinstance(manual_key, str) or not manual_link.loopback(self._telemetry_endpoint[0])
+                                       or not manual_link.KEY_PATTERN.fullmatch(manual_key)
+                                       or goal_map_sha256 is not None):
+            raise ValueError("手动遥控需要私有密钥、回环 PC2 通道，且不能与单点导航同时启用")
+        self._manual_key = manual_key
         if goal_map_sha256 is not None and (
                 not isinstance(goal_map_sha256, str) or not _SHA256.fullmatch(goal_map_sha256)):
             raise ValueError("单点导航地图必须绑定到 64 位小写 SHA-256")
@@ -89,15 +129,25 @@ class StationSource:
                 "origin_y_m": grid.origin[1], "origin_yaw_rad": grid.origin[2],
             }
 
-    def _pc2_request(self, method, path, payload=None):
+    def _pc2_request(self, method, path, payload=None, *, control_status=False):
         # 请求路径由本类给出。只连部署时配置的 PC2，不使用环境代理、不跟随重定向。
         # HTTP 回执丢失时，运动目标可能已受理；此处不对 POST 作自动重发。
         body = None
         headers = {"Accept": "application/json", "Cache-Control": "no-store"}
+        # 独立遥控部署中，状态鉴权和所有控制请求只能发给控制端口。原有只读隧道
+        # 只接收不含密钥的遥测、地图和位姿请求。未指定第二地址的演练仍使用单通道。
+        if path == PC2_STOP_RESET_PATH and self._manual_endpoint is None:
+            raise ValueError("停车复位需要独立遥控通道")
+        manual = path in manual_link.PC2_COMMANDS or path == PC2_STOP_RESET_PATH or (
+            path == "/api/robot/state" and (control_status or self._manual_endpoint is None))
+        endpoint = self._manual_endpoint if manual and self._manual_endpoint else self._telemetry_endpoint
+        if self._manual_key is not None and manual:
+            headers["Authorization"] = "Bearer " + self._manual_key
         if payload is not None:
             body = json.dumps(payload, allow_nan=False, separators=(",", ":")).encode("utf-8")
             headers["Content-Type"] = "application/json"
-        connection = HTTPConnection(self._host, self._port, timeout=_TIMEOUT_SECONDS)
+        timeout = _STOP_RESET_TIMEOUT_SECONDS if path == PC2_STOP_RESET_PATH else _TIMEOUT_SECONDS
+        connection = HTTPConnection(*endpoint, timeout=timeout)
         try:
             connection.request(method, path, body=body, headers=headers)
             response = connection.getresponse()
@@ -178,25 +228,210 @@ class StationSource:
             return 400, {"ok": False, "reason": "invalid_goal"}
         return self._forward_goal("POST", _GOAL_PATH + "/cancel", payload)
 
-    def state(self):
-        # PC2 离线与上位机进程离线是两种状态：本地地图与其他页面仍可读取。
-        robot = {**dict.fromkeys(_ROBOT_FIELDS), **fresh_details({}), "online": False}
-        reason = None
+    def _manual(self, path, payload):
+        if self._manual_key is None:
+            return 405, {"ok": False, "reason": "manual_control_disabled"}
+        operation = manual_link.PC2_COMMANDS[path]
+        if not manual_link.valid_command(operation, payload):
+            return 400, {"ok": False, "reason": "invalid_manual_command"}
+        if operation not in manual_link.STOP_COMMANDS:
+            # 直接访问站端接口时也核对当前 PC2，而不相信网页上一次看到的按钮状态。
+            # 停车独立于遥测；即使状态读取失败，旧会话仍可以请求停车。
+            _, state = self.state()
+            control = state["control"]
+            if not control["available"]:
+                reason = state["pc2_reason"] or control["reason"]
+                code = {"pc2_unavailable": 503, "manual_link_offline": 503, "pc2_invalid_response": 502,
+                        "manual_invalid_response": 502, "manual_auth_failed": 403}.get(reason, 409)
+                return code, {"ok": False, "reason": reason}
+        return manual_link.forward_command(self._pc2_request, path, payload)
+
+    def acquire(self, payload):
+        return self._manual("/api/manual/session", payload)
+
+    def velocity(self, payload):
+        return self._manual("/api/manual/velocity", payload)
+
+    def stop(self, payload):
+        return self._manual("/api/manual/stop", payload)
+
+    def action_start(self, payload):
+        return self._manual("/api/manual/action/start", payload)
+
+    def action_release(self, payload):
+        return self._manual("/api/manual/action/release", payload)
+
+    def stop_reset(self, payload):
+        if not valid_stop_reset_confirmation(payload):
+            return 400, {"ok": False, "reason": "stop_reset_confirmation_required"}
+        if self._manual_endpoint is None:
+            return 405, {"ok": False, "reason": "stop_reset_unavailable"}
+        # 重新配对两路守护状态。发令门禁会因锁存关闭，不能拿它挡住复位。
+        _, state = self.state()
+        readiness = state["stop_reset"]
+        if not readiness["available"]:
+            return 409, {"ok": False, "reason": readiness["reason"]}
         try:
-            started_ns = time.monotonic_ns()
+            status, reply = self._pc2_request("POST", PC2_STOP_RESET_PATH, payload)
+            if status == 403 and reply.get("reason") == "manual_auth_failed":
+                return 403, {"ok": False, "reason": "manual_auth_failed"}
+            ok = reply.get("ok")
+            if (reply.get("protocol") != manual_link.PROTOCOL or type(ok) is not bool
+                    or not valid_stop_reset_reason(reply.get("reason"))
+                    or (ok and status != 200) or (not ok and not 400 <= status < 600)):
+                raise ValueError("PC2 复位回执无效")
+            return status, {"ok": ok, "reason": reply["reason"]}
+        except (OSError, HTTPException, ValueError, TypeError, OverflowError, RecursionError):
+            # 请求可能已被机载端处理。转发层不重发，让操作员核对实测锁存状态。
+            return 502, {"ok": False, "reason": "stop_reset_outcome_unknown"}
+
+    def _read_control_report(self):
+        """遥控隧道故障仅关闭控制。正式只读链路仍可独立展示电池、守护与地图。"""
+        try:
+            status, report = self._pc2_request("GET", "/api/robot/state", control_status=True)
+            if status in (401, 403):
+                return None, "manual_auth_failed"
+            if status != 200:
+                return None, "manual_invalid_response"
+            return report, None
+        except (OSError, HTTPException):
+            return None, "manual_link_offline"
+        except (ValueError, TypeError, OverflowError, RecursionError):
+            return None, "manual_invalid_response"
+
+    @staticmethod
+    def _paired_control(report, elapsed_ms, robot, remote_stop):
+        """只有来自同一机器人、两边均新鲜的遥测和守护才能开放正式控制。"""
+        try:
+            peer = _robot_fields(report, elapsed_ms)
+        except (ValueError, TypeError, OverflowError):
+            return manual_link.unavailable("manual_invalid_response")
+        # 两个端口即使都返回有效报文也可能接到不同机器；未知标识不能相互配对。
+        if not robot["id"] or not robot["id"].strip() or robot["id"] != peer["id"]:
+            return manual_link.unavailable("manual_robot_mismatch")
+        if not isinstance(report.get("control"), dict):
+            # 普通只读网关也能报告锁存，却不支持遥控协议；不能把它当作已接好的控制通道。
+            return manual_link.unavailable("manual_control_disabled")
+        control = manual_link.control_state(report.get("control"))
+        if control["source"] == "mock":
+            return manual_link.unavailable("manual_receiver_source_mismatch")
+        if control["reason"] in ("manual_auth_failed", "manual_receiver_source_mismatch"):
+            return control
+        guards = (remote_stop, _remote_stop(report.get("remote_stop"), elapsed_ms))
+        for guard in guards:
+            blocked = remote_stop_status.blocked_reason(guard)
+            if blocked:
+                return manual_link.unavailable(blocked, control["source"])
+        if not robot["online"] or not peer["online"]:
+            return manual_link.unavailable("robot_offline", control["source"])
+        # PC2 发布者给速度反馈设置了有效期。经过 SSH 和第二次读状态后，
+        # 即便机器人在线标志仍为真，已过期的运动反馈也不能用来发放控制。
+        if control["available"] and (robot["velocity"] is None or peer["velocity"] is None):
+            return manual_link.unavailable("feedback_stale", control["source"])
+        return control
+
+    @staticmethod
+    def _paired_stop_reset(report, elapsed_ms, robot, remote_stop):
+        try:
+            peer = _robot_fields(report, elapsed_ms)
+        except (ValueError, TypeError, OverflowError):
+            return {"available": False, "reason": "manual_invalid_response"}
+        if not robot["id"] or not robot["id"].strip() or robot["id"] != peer["id"]:
+            return {"available": False, "reason": "manual_robot_mismatch"}
+        control = report.get("control")
+        if not isinstance(control, dict):
+            return {"available": False, "reason": "stop_reset_unavailable"}
+        if control.get("reason") == "manual_auth_failed":
+            return {"available": False, "reason": "manual_auth_failed"}
+        if control.get("source") == "mock" or control.get("reason") == "manual_receiver_source_mismatch":
+            return {"available": False, "reason": "manual_receiver_source_mismatch"}
+        if not robot["online"] or not peer["online"]:
+            return {"available": False, "reason": "robot_offline"}
+        for guard in (remote_stop, _remote_stop(report.get("remote_stop"), elapsed_ms)):
+            reason = remote_stop_status.reset_blocked_reason(guard)
+            if reason:
+                return {"available": False, "reason": reason}
+        if control.get("reason") != "stop_latched" or control.get("available") is not False:
+            return {"available": False, "reason": "manual_invalid_response"}
+        status = report.get("stop_reset")
+        if (not isinstance(status, dict) or type(status.get("available")) is not bool
+                or not valid_stop_reset_reason(status.get("reason"))):
+            return {"available": False, "reason": "stop_reset_unavailable"}
+        return {"available": status["available"], "reason": status["reason"]}
+
+    def _read_telemetry(self):
+        """获取正式遥测并保留 PC2 创建快照时的年龄，供两种站端状态响应共用。"""
+        try:
+            start = time.monotonic_ns()
             message = self._get("/api/robot/state")
-            elapsed_ms = (time.monotonic_ns() - started_ns) // 1_000_000
+            elapsed_ms = (time.monotonic_ns() - start) // 1_000_000
             robot = _robot_fields(message, elapsed_ms)
+            remote_stop = _remote_stop(message.get("remote_stop"), elapsed_ms)
+            return message, robot, remote_stop, None
         except (OSError, HTTPException):
             reason = "pc2_unavailable"
         except (ValueError, TypeError, OverflowError, RecursionError):
             reason = "pc2_invalid_response"
+        # PC2 离线后不沿用上一帧。站端自身仍在线，地图和其他页面可继续访问。
+        offline = {**dict.fromkeys(_ROBOT_FIELDS), **fresh_details({}), "online": False}
+        return None, offline, _remote_stop(None, 0), reason
+
+    def telemetry(self):
+        """只读驾驶舱无需等控制隧道完成状态查询。"""
+        if self._manual_key is not None and self._manual_endpoint is None:
+            # 旧的单通道遥控演练共用网关，不能借这个入口发送遥控鉴权。
+            return 404, {"ok": False, "reason": "not_found"}
+        _, robot, remote_stop, reason = self._read_telemetry()
+        return 200, {"deployment": "station", "pc2_connected": reason is None, "pc2_reason": reason,
+                     "robot": robot, "remote_stop": remote_stop}
+
+    def state(self):
+        control = manual_link.unavailable("pc2_unavailable")
+        stop_reset = {"available": False, "reason": "stop_reset_unavailable"}
+        if self._manual_endpoint:
+            # 配对状态继续先读控制、后读正式遥测，控制与复位请求仍用这条路径就地核对。
+            control_start = time.monotonic_ns()
+            control_report, control_error = self._read_control_report()
+        message, robot, remote_stop, reason = self._read_telemetry()
+        try:
+            if message is not None and self._manual_endpoint:
+                if control_error:
+                    control = manual_link.unavailable(control_error)
+                    stop_reset = {"available": False, "reason": control_error}
+                else:
+                    control_age_ms = (time.monotonic_ns() - control_start) // 1_000_000
+                    control = self._paired_control(control_report, control_age_ms, robot, remote_stop)
+                    stop_reset = self._paired_stop_reset(control_report, control_age_ms, robot, remote_stop)
+            elif message is not None and self._manual_key is not None:
+                control = manual_link.control_state(message.get("control"))
+                if control["source"] == "mock":
+                    # 演练使用模拟接收器的锁存；不将测试机上的服务状态冒充机器人遥测。
+                    remote_stop = None
+                elif (control["source"] == "unitree" or
+                      (remote_stop["latched"] is True and control["reason"] != "manual_auth_failed")):
+                    blocked = remote_stop_status.blocked_reason(remote_stop)
+                    if blocked:
+                        control = manual_link.unavailable(blocked, control["source"])
+                if not robot["online"] and control["available"]:
+                    control = manual_link.unavailable("robot_offline", control["source"])
+        except (OSError, HTTPException):
+            reason = "pc2_unavailable"
+        except (ValueError, TypeError, OverflowError, RecursionError):
+            reason = "pc2_invalid_response"
+        if self._manual_key is None:
+            # 未启用发令的正式站端始终只读，但锁存原因须优先告知操作员。
+            control = {"available": False, "armed": False,
+                       "reason": "stop_latched" if remote_stop["latched"] is True else "robot_readonly",
+                       "limits": {"linear_mps": 0.0, "angular_radps": 0.0}}
         return 200, {
-            "deployment": "station", "mode": "robot_readonly", "server_time_ms": time.time_ns() // 1_000_000,
+            "deployment": "station", "mode": "manual_control" if self._manual_key else "robot_readonly",
+            "server_time_ms": time.time_ns() // 1_000_000,
             "pc2_connected": reason is None, "pc2_reason": reason, "robot": robot,
             "map": self._map_metadata, "pose": None,
-            "control": {"available": False, "armed": False, "reason": "robot_readonly",
-                        "limits": {"linear_mps": 0.0, "angular_radps": 0.0}},
+            "remote_stop": remote_stop, "control": control,
+            **({"independent_telemetry": True,
+                "stop_reset": stop_reset if reason is None else {"available": False, "reason": reason}}
+               if self._manual_endpoint else {}),
         }
 
     def map_data(self):

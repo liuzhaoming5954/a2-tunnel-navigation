@@ -1,26 +1,34 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Icon from './Icon.vue'
 import MapView from './MapView.vue'
-import { DIRECTIONS, describeError } from './useGateway.js'
-import { formatImuYawRate } from './yawRate.js'
+import RemoteStopStatus from './RemoteStopStatus.vue'
+import { DIRECTIONS, describeError, formatImuYawRate } from './useGateway.js'
 
 // 网关由外壳持有，退出维护页后的停止重试仍由同一会话完成。
 const props = defineProps({ gateway: { type: Object, required: true } })
 const {
-  state, yawRates, map, connection, mapStatus, phase, activeDirection, events, fault,
-  limits, available, canArm, canStop, canDrive, arm, stop, beginDirection, endDirection, clearEvents,
+  state, map, connection, mapStatus, phase, activeDirection, events, fault,
+  remoteStop, remoteStopBlock, limits, available, canArm, canStop, canDrive, controlExpiresAt,
+  hasControlSession, repeatedActions, continuousHold, actionExpiresAt,
+  arm, stop, beginDirection, endDirection, clearEvents,
 } = props.gateway
 
 const directionIcons = { forward: 'up', back: 'down', left: 'left', right: 'right' }
 const directionOrder = ['forward', 'left', 'back', 'right']
-const keyDirections = { w: 'forward', s: 'back', a: 'left', d: 'right' }
+const keyDirections = {
+  w: 'forward', arrowup: 'forward', s: 'back', arrowdown: 'back',
+  a: 'left', arrowleft: 'left', d: 'right', arrowright: 'right',
+}
 const eventLabels = { ok: '成功', info: '操作', warn: '告警' }
 const phaseLabels = {
   idle: '待启用',
   arming: '启用中',
   ready: '已启用',
+  action_starting: '动作确认中',
   moving: '指令发送中',
+  action_stopping: '等待停稳',
+  release_required: '本段到期，请松键',
   stopping: '停止确认中',
   stop_unconfirmed: '停止待确认',
 }
@@ -41,14 +49,16 @@ const robotModes = {
   simulator: '模拟',
 }
 const clock = new Intl.DateTimeFormat('zh-CN', {
-  hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3, hourCycle: 'h23',
 })
 
 const isConnected = computed(() => connection.value === 'connected')
 const robot = computed(() => state.value?.robot)
 const robotOnline = computed(() => isConnected.value && robot.value?.online === true)
-const legacyAngular = computed(() => yawRates.value.sdk === null && robotOnline.value
-  && Number.isFinite(robot.value.angular_radps) ? robot.value.angular_radps : null)
+// IMU 与原厂速度字段独立，缺少差分读数时保留未知。
+const imuYaw = computed(() => isConnected.value && (state.value?.deployment !== 'station' || state.value.pc2_connected === true)
+  ? robot.value?.imuYaw : null)
+const imuYawRate = computed(() => formatImuYawRate(imuYaw.value?.rateRadps))
 const battery = computed(() => Number.isFinite(robot.value?.battery_percent) && robotOnline.value
   ? Math.max(0, Math.min(100, robot.value.battery_percent))
   : null)
@@ -59,11 +69,12 @@ const currentPose = computed(() => {
     ? pose
     : null
 })
-const modeLabel = computed(() => ({
-  simulator: '模拟器',
-  robot: '实机',
-  robot_readonly: '实机只读',
-})[state.value?.mode] ?? '等待数据')
+const modeLabel = computed(() => {
+  if (state.value?.mode === 'manual_control') {
+    return ({ mock: 'PC2 模拟底盘', unitree: 'PC2 实机遥控' })[state.value.control?.source] ?? 'PC2 遥控来源未知'
+  }
+  return ({ simulator: '模拟器', robot: '实机', robot_readonly: '实机只读' })[state.value?.mode] ?? '等待数据'
+})
 // 机器人离线时不沿用缓存的运动模式，未收录的机型模式按网关原值显示。
 const robotMode = computed(() => robotOnline.value && robot.value.mode
   ? (robotModes[robot.value.mode] ?? robot.value.mode)
@@ -92,17 +103,42 @@ function formatClock(value) {
 
 const unavailableLabel = computed(() => {
   if (!isConnected.value) return '网关在线后可查看控制状态'
+  // 真实锁存来自独立守护，即使底盘 DDS 遥测掉线或网关以只读角色运行也要提示。
+  if (remoteStopBlock.value) return describeError(remoteStopBlock.value)
   if (!robotOnline.value) return '机器人遥测离线'
   if (state.value?.mode === 'robot_readonly') return '当前实机为只读模式'
   return state.value?.control?.reason ? describeError(state.value.control.reason) : '当前控制不可用'
 })
+const controlStatus = computed(() => {
+  if (canStop.value) return phaseLabels[phase.value]
+  if (!available.value) return '控制不可用'
+  return state.value.control.armed ? '遥控会话已占用' : phaseLabels[phase.value]
+})
+const controlRemaining = ref(0)
+const displayDeadline = computed(() => actionExpiresAt.value ?? controlExpiresAt.value)
+watch(displayDeadline, (expiresAt, _previous, onCleanup) => {
+  if (expiresAt === null) return
+  // 只刷新显示。取得新会话和撤权仍由网关处理，切出维护页时停止刷新。
+  const update = () => {
+    controlRemaining.value = Math.max(0, expiresAt - performance.now()) / 1000
+  }
+  update()
+  const timer = setInterval(update, 100)
+  onCleanup(() => clearInterval(timer))
+}, { immediate: true })
 
 let pointerControl
 let keyControl
 
 function pressPointer(direction, event) {
-  if (event.button !== 0 || !beginDirection(direction)) return
-  event.currentTarget.setPointerCapture(event.pointerId)
+  if (continuousHold.value || event.button !== 0 || activeDirection.value || !canDrive(direction)) return
+  // 先确保按钮能收到这根手指或鼠标的释放事件，再允许发出第一条运动指令。
+  try {
+    event.currentTarget.setPointerCapture(event.pointerId)
+  } catch {
+    return
+  }
+  if (!beginDirection(direction)) return
   pointerControl = { id: event.pointerId, direction }
 }
 
@@ -111,6 +147,13 @@ function releasePointer(event) {
   const { direction } = pointerControl
   pointerControl = undefined
   endDirection(direction)
+}
+
+function cancelPointer(event) {
+  if (event.pointerId !== pointerControl?.id) return
+  pointerControl = undefined
+  // 未收到松键就失去指针，不能把它解释成允许下一段动作的物理释放。
+  void stop('指针控制中断，解除控制')
 }
 
 function keyDown(event) {
@@ -125,7 +168,7 @@ function keyDown(event) {
   const direction = keyDirections[key]
   if (!direction || event.altKey || event.ctrlKey || event.metaKey || event.repeat || !canDrive(direction)) return
   event.preventDefault()
-  if (beginDirection(direction)) keyControl = { key, direction }
+  if (beginDirection(direction, event.isTrusted ? 'trusted_key' : 'untrusted_key')) keyControl = { key, direction }
 }
 
 function keyUp(event) {
@@ -180,22 +223,25 @@ onBeforeUnmount(() => {
         <div class="manual-body">
           <div class="control-state" :class="phase" role="status">
             <i class="state-dot"></i>
-            <span>{{ available || canStop ? phaseLabels[phase] : '控制不可用' }}</span>
+            <span>{{ controlStatus }}</span>
           </div>
-          <button type="button" class="arm-button" :disabled="!canArm" @click="arm">
-            <Icon name="power" :size="17" /> {{ phase === 'arming' ? '启用中' : '启用控制' }}
+          <button type="button" class="arm-button" :class="{ 'session-active': hasControlSession }"
+            :disabled="!canArm" aria-describedby="manual-control-note" @click="arm">
+            <Icon name="power" :size="17" />
+            {{ hasControlSession ? '控制已启用' : phase === 'arming' ? '启用中' : '启用控制' }}
           </button>
+          <p v-if="displayDeadline !== null" class="control-remaining">{{ repeatedActions ? '本段剩余' : '会话剩余' }} <strong>{{ controlRemaining.toFixed(1) }}</strong> 秒</p>
           <div class="control-divider"></div>
 
-          <div class="control-label"><span>行进方向</span><Icon name="keyboard" :size="16" /></div>
+          <div class="control-label"><span>机身方向</span><Icon name="keyboard" :size="16" /></div>
           <div class="direction-pad" aria-label="按住发送行进指令">
             <button
               v-for="direction in directionOrder" :key="direction" type="button" class="direction-key"
               :class="[direction, { active: activeDirection === direction }]"
               :aria-label="DIRECTIONS[direction].label" :aria-pressed="activeDirection === direction"
-              :disabled="!canDrive(direction)"
+              :disabled="continuousHold || !canDrive(direction)"
               @pointerdown.prevent="pressPointer(direction, $event)"
-              @pointerup="releasePointer" @pointercancel="releasePointer" @lostpointercapture="releasePointer"
+              @pointerup="releasePointer" @pointercancel="cancelPointer" @lostpointercapture="cancelPointer"
             >
               <kbd>{{ DIRECTIONS[direction].key }}</kbd>
               <Icon :name="directionIcons[direction]" :size="20" />
@@ -203,16 +249,21 @@ onBeforeUnmount(() => {
             </button>
           </div>
           <button type="button" class="stop-button" :disabled="!canStop" @click="stop('操作员触发停止')">
-            <Icon name="stop" :size="18" /><span>停止并解除</span><kbd>Space</kbd>
+            <Icon name="stop" :size="18" /><span>停止遥控</span><kbd>Space</kbd>
           </button>
 
-          <p v-if="fault" class="control-note warning" role="alert"><Icon name="info" :size="15" />{{ fault }}</p>
-          <p v-else-if="!available" class="control-note"><Icon name="info" :size="15" />{{ unavailableLabel }}</p>
-          <p v-else class="control-note"><Icon name="shield" :size="15" />按住行进，松开后停止并解除控制。</p>
-          <div class="control-limits">
-            <span>控制限速</span>
-            <strong>{{ available ? fixed(limits.linear) : '—' }} <small>m/s</small></strong>
-            <strong>{{ available ? fixed(limits.angular) : '—' }} <small>rad/s</small></strong>
+          <p v-if="remoteStopBlock" id="manual-control-note" class="control-note" :class="{ warning: remoteStopBlock === 'stop_latched' }" role="status"><Icon name="shield" :size="15" />{{ unavailableLabel }}</p>
+          <p v-else-if="fault" id="manual-control-note" class="control-note warning" role="alert"><Icon name="info" :size="15" />{{ fault }}</p>
+          <p v-else-if="!available" id="manual-control-note" class="control-note"><Icon name="info" :size="15" />{{ unavailableLabel }}</p>
+          <p v-else id="manual-control-note" class="control-note"><Icon name="shield" :size="15" /><span>
+            <template v-if="continuousHold">按住实体方向键或 WASD 行进，松键结束控制。</template>
+            <template v-else>按住方向键或 WASD 行进。{{ repeatedActions ? '松键即停，停稳后可再次按键。' : '松开即结束遥控。' }}</template>
+            <template v-if="state?.mode === 'manual_control'">键盘 A 左转，原厂遥控器 A 键停车并锁存。</template>
+          </span></p>
+          <div class="control-limits" aria-label="控制限速">
+            <div><span>前进</span><strong>{{ available ? fixed(limits.forward) : '—' }} <small>m/s</small></strong></div>
+            <div><span>后退</span><strong>{{ available ? fixed(limits.linear) : '—' }} <small>m/s</small></strong></div>
+            <div><span>转向</span><strong>{{ available ? fixed(limits.angular * 180 / Math.PI, 1) : '—' }} <small>°/s</small></strong></div>
           </div>
         </div>
       </section>
@@ -239,15 +290,13 @@ onBeforeUnmount(() => {
             <dl class="status-details">
               <div><dt>运动模式</dt><dd>{{ robotMode }}</dd></div>
               <div><dt>遥测延迟</dt><dd class="mono">{{ age(robot?.telemetry_stamp_ms, robot?.telemetry_age_ms) }}</dd></div>
-              <div v-if="state?.mode !== 'simulator'">
-                <dt>{{ legacyAngular === null ? '原厂偏航角速度' : '旧版角速度' }}</dt>
-                <dd class="mono">{{ fixed(yawRates.sdk ?? legacyAngular, 3) }} rad/s</dd>
-              </div>
+              <div v-if="state?.mode !== 'simulator'"><dt>原厂偏航角速度</dt><dd class="mono">{{ fixed(robotOnline ? (robot?.velocity?.yaw_radps ?? robot?.angular_radps) : null, 3) }} rad/s</dd></div>
             </dl>
+            <RemoteStopStatus v-if="remoteStop" :report="remoteStop" />
             <div class="velocity-cards">
               <div><span>线速度</span><strong>{{ fixed(robotOnline ? robot?.linear_mps : null) }}</strong><small>m/s</small></div>
               <div v-if="state?.mode === 'simulator'"><span>角速度</span><strong>{{ fixed(robotOnline ? robot?.angular_radps : null) }}</strong><small>rad/s</small></div>
-              <div v-else><span>IMU 转速估计</span><strong>{{ formatImuYawRate(yawRates.imu) }}</strong><small>°/s</small></div>
+              <div v-else class="imu-yaw-rate"><span title="IMU 偏航角差分估计，— 表示暂无有效读数">IMU 转速估计</span><strong>{{ imuYawRate }}</strong><small>°/s</small></div>
             </div>
           </div>
         </section>

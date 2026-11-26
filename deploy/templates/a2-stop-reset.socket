@@ -1,0 +1,17 @@
+[Unit]
+Description=A2 受限停车锁存复位接口
+Wants=a2-vendor-owner.service
+After=a2-vendor-owner.service
+
+[Socket]
+ListenStream=/run/a2-stop-reset.sock
+SocketUser=root
+SocketGroup=unitree
+SocketMode=0660
+Accept=yes
+MaxConnections=8
+Backlog=8
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

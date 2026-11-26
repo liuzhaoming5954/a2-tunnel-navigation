@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from a2_gateway.odin1_pose import MAX_AGE_MS, SOURCE
+from a2_gateway import remote_stop_status
 from a2_gateway.station import StationSource
 
 
@@ -49,24 +50,106 @@ class StationSourceTest(unittest.TestCase):
         self.assertFalse(state["robot"]["online"])
         self.assertEqual(state["robot"]["id"], "test")
         self.assertIsNone(state["robot"]["battery_percent"])
+        self.assertEqual(state["robot"]["batteries"], {"primary": None, "secondary": None})
 
-    def test_station_forwards_imu_rate_and_raw_zero_with_independent_expiry(self):
-        # 上位机完整请求环节扣除传输时间，原厂零和 IMU 估算独立保留。
-        attitude = {"yaw_rad": 0., "yaw_rate_radps": -0.3, "age_ms": 200, "max_age_ms": 500}
-        message = {"deployment": "pc2", "mode": "robot_readonly",
-                   "robot": {"online": True, "attitude": attitude,
-                             "velocity": {"yaw_radps": 0., "age_ms": 200, "max_age_ms": 500}}}
-        for delay_ms, expected in [(49, -0.3), (50, None)]:
-            with (self.subTest(delay_ms=delay_ms), patch.object(self.source, "_get", return_value=message),
-                  patch("a2_gateway.station.time.monotonic_ns", side_effect=[0, delay_ms * 1_000_000])):
-                robot = self.source.state()[1]["robot"]
-                self.assertEqual(robot["attitude"]["yaw_rate_radps"], expected)
-                self.assertEqual(robot["attitude"]["age_ms"], 200)
-                self.assertEqual(robot["attitude"]["yaw_rad"], 0.)
-                self.assertEqual(robot["velocity"]["yaw_radps"], 0.)
-        del attitude["yaw_rate_radps"]
-        with patch.object(self.source, "_get", return_value=message):
-            self.assertIsNone(self.source.state()[1]["robot"]["attitude"]["yaw_rate_radps"])
+    def test_readonly_station_reports_current_guard_even_when_body_is_offline(self):
+        guard = {"source": remote_stop_status.SOURCE, "guard": "running", "latched": True,
+                 "age_ms": 90, "max_age_ms": remote_stop_status.MAX_AGE_MS}
+        message = {"deployment": "pc2", "mode": "robot_readonly", "robot": {"online": False}}
+        for sample, expected_reason in ((guard, "stop_latched"), ({**guard, "latched": False}, "robot_readonly")):
+            with self.subTest(sample=sample), patch.object(self.source, "_get", return_value={**message, "remote_stop": sample}):
+                _, state = self.source.state()
+                self.assertTrue(state["pc2_connected"])
+                self.assertEqual(state["remote_stop"], sample)
+                self.assertFalse(state["control"]["available"])
+                self.assertFalse(state["control"]["armed"])
+                self.assertEqual(state["control"]["reason"], expected_reason)
+
+    def test_missing_malformed_and_expired_guard_do_not_hide_valid_telemetry(self):
+        guard = {"source": remote_stop_status.SOURCE, "guard": "running", "latched": True,
+                 "age_ms": remote_stop_status.MAX_AGE_MS - 5, "max_age_ms": remote_stop_status.MAX_AGE_MS}
+        message = {"deployment": "pc2", "mode": "robot_readonly", "robot": {"online": True}}
+        for sample in (None, guard, {**guard, "age_ms": False}, {**guard, "source": "mock", "age_ms": 0},
+                       {**guard, "guard": {}, "age_ms": 0}, {**guard, "latched": 1, "age_ms": 0},
+                       {**guard, "max_age_ms": 99999, "age_ms": 0}):
+            with self.subTest(sample=sample), patch.object(self.source, "_get", return_value={**message, "remote_stop": sample}), \
+                    patch("a2_gateway.station.time.monotonic_ns", side_effect=[0, 5000000]):
+                _, state = self.source.state()
+                self.assertTrue(state["pc2_connected"])
+                self.assertEqual(state["remote_stop"]["guard"], "unknown")
+                self.assertIsNone(state["remote_stop"]["latched"])
+                self.assertFalse(state["control"]["available"])
+        # 含锁存旧帧的 PC2 一旦掉线，站端不能把它呈现为当前已知状态。
+        with patch.object(self.source, "_get", side_effect=OSError):
+            _, state = self.source.state()
+            self.assertFalse(state["pc2_connected"])
+            self.assertIsNone(state["remote_stop"]["latched"])
+
+    def test_direct_manual_request_checks_guard_before_forwarding_and_preserves_stop(self):
+        station = StationSource("http://127.0.0.1:12345", manual_key="test" * 8)
+        control = {"source": "unitree", "available": True, "armed": True, "reason": "armed",
+                   "limits": {"linear_mps": .05, "angular_radps": .15}}
+        base = {"deployment": "pc2", "mode": "robot_readonly", "robot": {"online": True}, "control": control}
+        guard = {"source": remote_stop_status.SOURCE, "guard": "running", "latched": True,
+                 "age_ms": 10, "max_age_ms": remote_stop_status.MAX_AGE_MS}
+        cmd = {"session_id": "synthetic-session", "sequence": 1, "linear_mps": .05, "angular_radps": 0}
+        for sample, reason in ((guard, "stop_latched"), (None, "stop_guard_not_ready"),
+                               ({**guard, "latched": None}, "stop_guard_not_ready"),
+                               ({**guard, "guard": "stopped", "latched": False}, "stop_guard_not_ready"),
+                               ({**guard, "age_ms": guard["max_age_ms"]}, "stop_guard_not_ready")):
+            with self.subTest(sample=sample), patch.object(station, "_get", return_value={**base, "remote_stop": sample}), \
+                    patch.object(station, "_pc2_request") as upstream:
+                self.assertEqual(station.acquire({}), (409, {"ok": False, "reason": reason}))
+                self.assertEqual(station.velocity(cmd), (409, {"ok": False, "reason": reason}))
+                upstream.assert_not_called()
+        # 控制通道中断时仍可尝试停车；该操作独立于只读状态请求。
+        with patch.object(station, "_get", side_effect=OSError) as read, \
+                patch.object(station, "_pc2_request", return_value=(200, {"ok": True, "protocol": "a2-manual-v1"})) as send:
+            self.assertEqual(station.stop({"session_id": cmd["session_id"]}), (200, {"ok": True}))
+            read.assert_not_called()
+            send.assert_called_once_with("POST", "/api/manual/stop", {"session_id": cmd["session_id"]})
+        with patch.object(station, "_get", return_value={**base, "remote_stop": {**guard, "latched": False}}), \
+                patch.object(station, "_pc2_request", return_value=(200, {"ok": True, "protocol": "a2-manual-v1"})) as send:
+            self.assertEqual(station.velocity(cmd), (200, {"ok": True}))
+            send.assert_called_once_with("POST", "/api/manual/velocity", cmd)
+
+    def test_dual_pack_forwarding_accounts_for_transport_and_preserves_zero(self):
+        # PC2 两路电池采集时间不同，同一 HTTP 响应到站后可以只有一侧仍有效。
+        primary = {"soc_percent": 0, "soh_percent": 99, "cycle_count": 0, "charging": False,
+                   "age_ms": 35, "max_age_ms": 500}
+        secondary = {**primary, "age_ms": 495}
+        message = {"deployment": "pc2", "mode": "robot_readonly", "robot": {
+            "id": "a2", "online": False, "batteries": {"primary": primary, "secondary": secondary},
+            "velocity": {"x_mps": False, "y_mps": 0., "z_mps": float("inf"), "yaw_radps": -.5,
+                         "age_ms": 2, "max_age_ms": 500},
+        }}
+        with patch.object(self.source, "_get", return_value=message), \
+                patch("a2_gateway.station.time.monotonic_ns", side_effect=[0, 5_000_000]):
+            _, state = self.source.state()
+        self.assertTrue(state["pc2_connected"])
+        robot = state["robot"]
+        self.assertEqual(robot["batteries"]["primary"], primary)
+        self.assertIsNone(robot["batteries"]["secondary"])
+        self.assertEqual(robot["velocity"], {"x_mps": None, "y_mps": 0., "z_mps": None,
+                                             "yaw_radps": -.5, "age_ms": 2, "max_age_ms": 500})
+        self.assertIsNone(robot["attitude"])
+        self.assertIsNone(robot["battery_percent"])
+
+    def test_battery_lifetime_on_a_slow_round_trip(self):
+        # 浏览器请求 240 ms，其中站端读取 PC2 占 230 ms。主包仍有 190 ms 可展示，
+        # 副包恰好在到站时过期，不能借用主包的时间，也不能延长其有效期。
+        primary = {"soc_percent": 18, "soh_percent": 100, "cycle_count": 6, "charging": None,
+                   "age_ms": 70, "max_age_ms": 500}
+        remote = {"deployment": "pc2", "mode": "robot_readonly", "robot": {
+            "online": True, "batteries": {"primary": primary, "secondary": {**primary, "age_ms": 270}},
+        }}
+        with patch.object(self.source, "_get", return_value=remote), \
+                patch("a2_gateway.station.time.monotonic_ns", side_effect=[0, 230_000_000]):
+            _, state = self.source.state()
+        packs = state["robot"]["batteries"]
+        self.assertEqual(packs["primary"], primary)
+        self.assertEqual(packs["primary"]["max_age_ms"] - packs["primary"]["age_ms"] - 240, 190)
+        self.assertIsNone(packs["secondary"])
 
     def test_no_remote_falls_back_to_simulator_or_previous_telemetry(self):
         for value in [dict(mode="simulator", robot={"online": True}, deployment="pc2"),

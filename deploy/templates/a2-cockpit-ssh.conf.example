@@ -1,0 +1,31 @@
+# 复制到上位机 ~/.config/a2-cockpit/ssh_config，替换两行地址及账号。
+# 示例 IP 为文档地址。known_hosts 使用两台现场主机分别核验过的公钥。
+Host a2-cockpit-pc3
+    HostName 192.0.2.4
+    User unitree
+    IdentityFile ~/.config/a2-cockpit/pc3_ed25519
+
+Host a2-cockpit-pc2
+    HostName 192.0.2.2
+    User unitree
+    IdentityFile ~/.config/a2-cockpit/pc2_ed25519
+    # PC3 服务端强制运行到 PC2 SSH 端口的固定中继，本处只提供其标准输入和输出。
+    ProxyCommand /usr/bin/ssh -F ~/.config/a2-cockpit/ssh_config -T a2-cockpit-pc3
+
+Host *
+    BatchMode yes
+    ConnectTimeout 5
+    ConnectionAttempts 1
+    ServerAliveInterval 3
+    ServerAliveCountMax 2
+    StrictHostKeyChecking yes
+    UserKnownHostsFile ~/.config/a2-cockpit/known_hosts
+    GlobalKnownHostsFile /dev/null
+    UpdateHostKeys no
+    IdentitiesOnly yes
+    IdentityAgent none
+    PreferredAuthentications publickey
+    ForwardAgent no
+    ForwardX11 no
+    RequestTTY no
+    ClearAllForwardings yes

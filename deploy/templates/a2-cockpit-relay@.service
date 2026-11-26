@@ -1,0 +1,15 @@
+[Unit]
+Description=A2 cockpit telemetry stream
+CollectMode=inactive-or-failed
+
+[Service]
+Type=exec
+StandardInput=socket
+StandardOutput=inherit
+StandardError=journal
+LogLevelMax=warning
+NoNewPrivileges=yes
+# 每个请求只使用现存主连接。主连接尚未就绪时，备用连接路径立即失败。
+# PC2 将会话固定到本机遥测端口；此处不申请 PTY，不发送远程命令。
+ExecStart=/usr/bin/ssh -F %h/.config/a2-cockpit/ssh_config -T -S %t/a2-cockpit-link/master -o ControlMaster=no -o ProxyCommand=/bin/false -o LogLevel=QUIET a2-cockpit-pc2
+SuccessExitStatus=255

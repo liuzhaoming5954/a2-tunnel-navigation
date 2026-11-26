@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from a2_gateway.odin1_pose import BOOT_ID_FILE, MAX_AGE_MS, pc2_pose_snapshot
+from a2_gateway.platform_details import fresh_details
 from a2_gateway.ros_telemetry import RosTelemetry, add_ros_arguments
 
 
@@ -131,14 +132,14 @@ class PC2ObservationsTest(unittest.TestCase):
             clock.return_value = steady + 500_000_000
             self.assertIsNone(telemetry.snapshot()["robot"]["attitude"])
 
-    def _telemetry_for_details_test(self, *, details_supported=True):
+    def _telemetry_for_stream_test(self, *, details_supported=True):
         parser = argparse.ArgumentParser()
         add_ros_arguments(parser)
         names = ("rclpy", "rclpy.context", "rclpy.executors", "rclpy.parameter",
                  "rclpy.qos", "rclpy.signals", "a2_interfaces.msg")
         modules = {name: MagicMock() for name in names}
         if not details_supported:
-            # 老接口包只能导入 PlatformState，保留基本平台观测订阅。
+            # 老接口包只能导入 PlatformState，验证健康检查沿用这条兼容路径。
             modules["a2_interfaces.msg"] = Fields(PlatformState=MagicMock())
         with patch.dict(sys.modules, modules), patch("a2_gateway.ros_telemetry.Thread"):
             telemetry = RosTelemetry(parser.parse_args([]), platform_only=True)
@@ -151,14 +152,8 @@ class PC2ObservationsTest(unittest.TestCase):
                       mode_valid=False, battery_valid=False, velocity_valid=False, age_ms=0, valid=False,
                       reason=reason, body_velocity=Fields(linear=Fields(x=0), angular=Fields(z=0)))
 
-    def test_gateway_keeps_basic_telemetry_with_older_ros_interfaces(self):
-        telemetry = self._telemetry_for_details_test(details_supported=False)
-        topics = [call.args[1] for call in telemetry._node.create_subscription.call_args_list]
-        self.assertEqual(topics, ["/a2/platform/state"])
-        self.assertIsNone(telemetry.snapshot()["robot"]["attitude"])
-
     def test_imu_rate_uses_advancing_sample_time_and_signed_wrapped_delta(self):
-        telemetry = self._telemetry_for_details_test()
+        telemetry = self._telemetry_for_stream_test()
         steady = 10_000_000_000
         ms = 1_000_000
 
@@ -200,6 +195,84 @@ class PC2ObservationsTest(unittest.TestCase):
             self.assertIsNone(update(clock, 900, 900, 5, session="two")["attitude"]["yaw_rate_radps"])
             self.assertIsNone(update(clock, 950, 950, float("nan"), session="two")["attitude"]["yaw_rate_radps"])
             self.assertIsNone(update(clock, 980, 980, 4, session="two")["attitude"]["yaw_rate_radps"])
+
+    def test_station_preserves_imu_rate_but_expires_it_before_valid_angles(self):
+        attitude = {"yaw_rad": 0., "yaw_rate_radps": -0.3, "age_ms": 200, "max_age_ms": 500}
+        self.assertEqual(fresh_details({"attitude": attitude}, transfer_ms=49)["attitude"]["yaw_rate_radps"], -0.3)
+        crossing_expiry = fresh_details({"attitude": attitude}, transfer_ms=50)["attitude"]
+        self.assertEqual(crossing_expiry["yaw_rad"], 0.)
+        self.assertIsNone(crossing_expiry["yaw_rate_radps"])
+        del attitude["yaw_rate_radps"]
+        self.assertIsNone(fresh_details({"attitude": attitude})["attitude"]["yaw_rate_radps"])
+
+    def test_platform_stream_uses_both_ros_callbacks_even_without_sdk_measurements(self):
+        telemetry = self._telemetry_for_stream_test()
+        steady = 10_000_000_000
+        max_age = 1_000_000_000
+        ros_clock = telemetry._node.get_clock.return_value.now.return_value
+        ros_clock.nanoseconds = 3_000_000_000
+        issue = telemetry.platform_stream_issue
+        self.assertEqual(issue(steady, max_age), "platform_frames_missing")
+
+        body = self._platform_without_sdk_data()
+        with patch("a2_gateway.ros_telemetry.time.monotonic_ns", return_value=steady) as clock:
+            telemetry._read_platform(body)
+            self.assertEqual(issue(steady, max_age), "details_frames_missing")
+
+            # 没有原厂采样时仍有 ROS 帧。空详情和 NO_DATA 应计入链路存活。
+            empty_pack = Fields(received_mono_ns=0, soc_percent=-1, soh_percent=-1,
+                                cycle_count=-1, charging_state="unknown")
+            detail = Fields(schema_version=1, source="unitree_sdk2", simulated=False, robot_id="a2",
+                            source_session_id="one", header=body.header, max_age_ms=500,
+                            primary_battery=empty_pack, secondary_battery=empty_pack,
+                            velocity_received_mono_ns=0, velocity_mps=[float("nan")] * 3,
+                            yaw_rate_radps=float("nan"), attitude_received_mono_ns=0,
+                            rpy_rad=[float("nan")] * 3)
+            telemetry._read_details(detail)
+            self.assertIsNone(issue(steady, max_age))
+            robot = telemetry.snapshot()["robot"]
+            self.assertFalse(robot["online"])
+            self.assertEqual(robot["batteries"], {"primary": None, "secondary": None})
+            self.assertIsNone(robot["velocity"])
+            self.assertIsNone(robot["attitude"])
+
+            # 重复的发布时戳不能续期。只要 STALE 帧的发布时戳在推进，平台话题就仍在工作。
+            clock.return_value = steady + 400_000_000
+            telemetry._read_platform(body)
+            telemetry._read_details(detail)
+            self.assertIsNone(issue(steady + max_age - 1, max_age))
+            clock.return_value = steady + max_age + 1
+            self.assertEqual(issue(clock.return_value, max_age), "platform_frames_stale")
+            ros_clock.nanoseconds += 100_000_000
+            body = self._platform_without_sdk_data(stamp_ns=100_000_000, reason="STALE")
+            telemetry._read_platform(body)
+            self.assertEqual(issue(clock.return_value, max_age), "details_frames_stale")
+            detail.header = body.header
+            telemetry._read_details(detail)
+            self.assertIsNone(issue(clock.return_value, max_age))
+
+            # 发布器换会话后，旧会话的明细即使仍新鲜也不能继续给新会话续期。
+            clock.return_value += 100_000_000
+            ros_clock.nanoseconds += 100_000_000
+            new_body = self._platform_without_sdk_data(source_session_id="two", stamp_ns=200_000_000)
+            telemetry._read_platform(new_body)
+            self.assertEqual(issue(clock.return_value, max_age), "details_frames_missing")
+            detail.header = new_body.header
+            telemetry._read_details(detail)
+            self.assertEqual(issue(clock.return_value, max_age), "details_frames_missing")
+            detail.source_session_id = "two"
+            telemetry._read_details(detail)
+            self.assertIsNone(issue(clock.return_value, max_age))
+
+    def test_platform_stream_allows_legacy_interface_without_details(self):
+        telemetry = self._telemetry_for_stream_test(details_supported=False)
+        steady = 10_000_000_000
+        max_age = 1_000_000_000
+        telemetry._node.get_clock.return_value.now.return_value.nanoseconds = 3_000_000_000
+        with patch("a2_gateway.ros_telemetry.time.monotonic_ns", return_value=steady):
+            telemetry._read_platform(self._platform_without_sdk_data())
+        self.assertIsNone(telemetry.platform_stream_issue(steady, max_age))
+        self.assertEqual(telemetry.platform_stream_issue(steady + max_age + 1, max_age), "platform_frames_stale")
 
     def test_ros_fixed_double_arrays_reach_http_as_numbers(self):
         from a2_gateway.platform_details import fresh_details, observation_groups

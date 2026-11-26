@@ -10,9 +10,10 @@ import { useGateway } from './useGateway.js'
 import './portal.css'
 
 // 只创建一个网关客户端，驾驶舱接收只读快照。维护页卸载时，网关仍可确认停止请求。
-const gateway = useGateway()
-const { state, yawRates, map, mapStatus, connection, phase } = gateway
 const current = ref(readPage())
+const inCockpit = computed(() => current.value === 'cockpit')
+const gateway = useGateway(inCockpit)
+const { state, map, mapStatus, connection, phase, cockpitState, cockpitConnection, cockpitRemoteStop } = gateway
 const info = computed(() => pageInfo(current.value))
 // 系统管理菜单保留维护遥控入口，各模块继续使用原有哈希地址。
 const menuGroups = groups.map(group => group.title === '系统管理'
@@ -29,16 +30,19 @@ const compact = window.matchMedia('(max-width: 860px)')
 
 // 轮询成功只说明当前网关可访问。PC2 的灯单独取上位机本次请求的结果，掉线时不沿用上次的在线指示。
 const gatewayStatus = computed(() => {
-  const snapshot = state.value
-  if (connection.value !== 'connected') {
+  const snapshot = inCockpit.value ? cockpitState.value : state.value
+  const link = inCockpit.value ? cockpitConnection.value : connection.value
+  if (link !== 'connected') {
     if (snapshot?.deployment === 'station') return [
       { text: '上位机未连接', tone: 'offline' }, { text: 'PC2 状态未知', tone: 'unknown' },
     ]
-    return [{ text: connection.value === 'connecting' ? '网关连接中' : '网关离线', tone: 'unknown' }]
+    return [{ text: link === 'connecting' ? '网关连接中' : '网关离线', tone: 'unknown' }]
   }
   if (snapshot.deployment === 'station') {
     let remote = { text: 'PC2 状态未知', tone: 'unknown' }
-    if (snapshot.pc2_connected === true) remote = { text: 'PC2 已连接', tone: 'online' }
+    if (snapshot.pc2_connected === true && snapshot.control?.source === 'mock') {
+      remote = { text: 'PC2 模拟底盘已连接', tone: 'simulation' }
+    } else if (snapshot.pc2_connected === true) remote = { text: 'PC2 已连接', tone: 'online' }
     else if (snapshot.pc2_reason === 'pc2_invalid_response') remote = { text: 'PC2 接口异常', tone: 'offline' }
     else if (snapshot.pc2_connected === false) remote = { text: 'PC2 未连接', tone: 'offline' }
     return [{ text: '上位机在线', tone: 'online' }, remote]
@@ -160,7 +164,7 @@ onBeforeUnmount(() => {
         <aside v-if="current !== 'maintenance' && ['stopping','stop_unconfirmed'].includes(phase)" role="status" class="portal-stop-status">
           {{ phase === 'stopping' ? '正在确认维护控制解除' : '维护控制停止待确认' }} <a href="#/maintenance">查看维护状态</a>
         </aside>
-        <InspectionCockpit v-if="current === 'cockpit'" :state="state" :yaw-rates="yawRates" :map="map" :connection="connection" :map-status="mapStatus" />
+        <InspectionCockpit v-if="inCockpit" :state="cockpitState" :map="map" :connection="cockpitConnection" :map-status="mapStatus" :remote-stop="cockpitRemoteStop" />
         <MaintenanceConsole v-else-if="current === 'maintenance'" :gateway="gateway" />
         <PatrolTask v-else-if="current === 'tasks' && state?.deployment === 'simulator'"
           :state="state" :connection="connection" />

@@ -67,18 +67,22 @@ class DeploymentRolesTest(unittest.TestCase):
         status, snapshot = self.request(f"{route}?map_sha256={digest}")
         self.assertEqual((status, snapshot["status"], snapshot["pose"]), (200, "waiting", None))
         # 即使同目录留有历史版本的页面，也不能通过 PC2 数据服务访问页面或展示地图。
-        for path in ("/", "/index.html", "/api/state", "/api/map", "/api/maps/odin1/metadata",
+        for path in ("/", "/index.html", "/api/state", "/api/telemetry", "/api/map", "/api/maps/odin1/metadata",
                      "/api/maps/odin1/points", "/api/maps/odin1/pose", "/api/control/session"):
             with self.subTest(path=path):
                 self.assertEqual(self.request(path)[0], 404)
         self.check_no_control()
 
     def test_station_keeps_local_page_and_maps_on_disconnect(self):
-        source = Mock(spec=["state", "pose", "map_data", "close"])
+        source = Mock(spec=["state", "telemetry", "pose", "map_data", "close"])
         source.state.return_value = (200, {"deployment": "station", "mode": "robot_readonly"})
+        source.telemetry.return_value = (200, {"deployment": "station", "pc2_connected": True})
         source.map_data.return_value = {"id": "local-grid"}
         self.start_handler("station", source)
         self.assertEqual(self.request("/api/state"), source.state.return_value)
+        self.assertEqual(self.request("/api/telemetry"), source.telemetry.return_value)
+        source.telemetry.assert_called_once_with()
+        self.assertEqual(self.request("/api/telemetry", "POST")[0], 405)
         for path in ("/api/robot/state", "/api/odin1/pose"):
             with self.subTest(path=path):
                 self.assertEqual(self.request(path)[0], 404)

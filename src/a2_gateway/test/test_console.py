@@ -120,24 +120,28 @@ class ConsoleGatewayTest(unittest.TestCase):
         origin = f"http://127.0.0.1:{port}"
         status, session = request("POST", "/api/control/session", {}, origin)
         self.assertEqual(status, 200)
+        self.assertEqual(request("POST", "/api/control/action/start",
+                                 {"session_id": session["session_id"], "sequence": 1, "direction": "forward"},
+                                 origin)[0], 404)
         payload = {"session_id": session["session_id"], "sequence": 1, "linear_mps": 0.2, "angular_radps": 0.0}
         self.assertEqual(request("POST", "/api/control/velocity", payload, origin)[0], 200)
         self.assertEqual(request("POST", "/api/control/stop", {"session_id": payload["session_id"]}, origin)[0], 200)
         self.assertFalse(request("GET", "/api/state")[1]["control"]["armed"])
         self.assertEqual(request("POST", "/api/control/velocity", {**payload, "sequence": 2}, origin)[0], 409)
 
-    def test_local_motion_service_must_confirm_receiver_stop_before_acquire(self):
+    def test_local_motion_service_uses_receiver_authorization_before_acquire(self):
         with tempfile.TemporaryDirectory(prefix="a2-motion-") as work:
             path = Path(work) / "arbiter.sock"
-            client = LocalMotionClient(path)
+            client = LocalMotionClient(path, require_source=True)
             self.assertFalse(client.state()["available"])
             received = []
             session = "safe-lease-for-test"
 
             def response(request):
                 if request["op"] == "status":
-                    return {"ok": True, "control": {"available": True, "armed": False,
-                            "receiver_stop_verified": len(received) > 1,
+                    allowed = len(received) > 1
+                    return {"ok": True, "control": {"available": allowed, "armed": False, "source": "unitree",
+                            "reason": "ready" if allowed else "stop_latched",
                             "limits": {"linear_mps": 0.2, "angular_radps": 0.4}}}
                 if request["op"] == "acquire":
                     return {"ok": True, "session_id": session, "expires_in_ms": 1500}
@@ -158,7 +162,7 @@ class ConsoleGatewayTest(unittest.TestCase):
 
                 worker = threading.Thread(target=serve, daemon=True)
                 worker.start()
-                self.assertEqual(client.acquire({})[1]["reason"], "receiver_stop_unverified")
+                self.assertEqual(client.acquire({}), (409, {"ok": False, "reason": "stop_latched"}))
                 self.assertEqual(client.acquire({})[1]["session_id"], session)
                 command = {"session_id": session, "sequence": 1, "linear_mps": 0.1, "angular_radps": 0.0}
                 self.assertEqual(client.velocity({**command, "linear_mps": float("nan")})[0], 400)

@@ -53,12 +53,26 @@ class ConsolePackageTest(unittest.TestCase):
 
     def test_pc2_builds_without_vue_or_map(self):
         names = self.build_and_check("pc2")
+        # 在只有 PC2 角色文件的解包目录检查两个模拟入口的依赖，禁止使用外部 SDK/site 包。
+        for script in ("scripts/run_a2_manual_demo.py", "scripts/run_a2_manual_receiver.py"):
+            self.assertIn(script, names)
+            subprocess.run([sys.executable, "-I", "-S", "-B", script, "--help"], cwd=self.work / "pc2",
+                           capture_output=True, check=True, timeout=5)
+        demo = subprocess.run([sys.executable, "-I", "-S", "-B", "scripts/run_a2_manual_demo.py",
+                               "--pc2-only", "--port", "0"], cwd=self.work / "pc2",
+                              capture_output=True, text=True, timeout=5)
+        self.assertEqual(demo.returncode, 2)
+        self.assertIn("--manual-key-file", demo.stderr)
         self.assertIn("scripts/observe_odin1_pose.py", names)
         self.assertIn("scripts/start_a2_console_readonly.sh", names)
+        self.assertIn("scripts/start_a2_console_readonly_boot.sh", names)
+        self.assertIn("deploy/templates/a2-cockpit-telemetry.service", names)
+        self.assertIn("deploy/templates/a2-autonomy-continuous-hold.conf", names)
         self.assertIn("src/a2_interfaces/msg/PlatformState.msg", names)
         self.assertIn("src/a2_interfaces/msg/PlatformDetails.msg", names)
         self.assertIn("src/a2_interfaces/msg/BatteryTelemetry.msg", names)
         self.assertIn("src/a2_gateway/a2_gateway/platform_details.py", names)
+        self.assertIn("src/a2_gateway/a2_gateway/remote_stop_status.py", names)
         self.assertFalse(any("/web/" in n or n.startswith(("maps/", "data/")) for n in names))
         self.assertNotIn("scripts/publish_a2_map.py", names)
         self.assertNotIn("src/a2_gateway/a2_gateway/station.py", names)
@@ -76,12 +90,17 @@ class ConsolePackageTest(unittest.TestCase):
             (dist / name).write_bytes(b"fixture")
         names = self.build_and_check("station")
         self.assertIn(f"{packager.DIST}/assets/app.js", names)
+        self.assertIn("deploy/templates/a2-cockpit-station.service", names)
+        self.assertIn("deploy/templates/a2-cockpit-ssh.conf.example", names)
         self.assertNotIn(f"{packager.DIST}/assets/field.pcd", names)
         self.assertIn("src/a2_navigation/a2_navigation/offline_planner.py", names)
         self.assertIn("src/a2_gateway/a2_gateway/patrol.py", names)
         self.assertIn("src/a2_gateway/a2_gateway/platform_details.py", names)
+        self.assertIn("src/a2_gateway/a2_gateway/remote_stop_status.py", names)
         self.assertNotIn("scripts/publish_a2_platform_state.py", names)
         self.assertNotIn("scripts/observe_odin1_pose.py", names)
+        self.assertNotIn("scripts/run_a2_manual_demo.py", names)
+        self.assertNotIn("scripts/run_a2_manual_receiver.py", names)
         self.assertFalse(any(n.startswith("src/a2_interfaces/") for n in names))
         output = self.work / "station.zip"
         original = output.read_bytes()

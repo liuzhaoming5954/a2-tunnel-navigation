@@ -1,0 +1,8 @@
+[Unit]
+Description=A2 cockpit loopback telemetry socket
+
+[Socket]
+# 监听上位机回环。服务随连接派生，可在 PC2 重新上线前后使用同一站端入口。
+ListenStream=127.0.0.1:8766
+Accept=yes
+NoDelay=yes

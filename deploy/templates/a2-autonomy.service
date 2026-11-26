@@ -1,0 +1,23 @@
+[Unit]
+Description=A2 自主任务与运动指令发送进程组
+BindsTo=a2-remote-stop.service
+After=a2-remote-stop.service
+ConditionPathExists=!/var/lib/a2-remote-stop/latched
+ConditionPathExists=!/run/a2-remote-stop/sender-fault
+ConditionPathExists=/run/a2-remote-stop/ready
+ConditionFileIsExecutable=/etc/a2/autonomy-start
+
+[Service]
+# 现场入口以前台方式运行，所有自主发令子进程由同一个控制组管理。
+Type=exec
+User=a2-autonomy
+ExecStart=/usr/bin/env -- /etc/a2/autonomy-start
+# 由系统管理器在发令进程退出后启动。仅此钩子以管理员身份写守护的故障标志。
+ExecStopPost=+/usr/bin/python3 -sB /opt/a2/scripts/a2_remote_stop.py notify-sender-exit
+NoNewPrivileges=yes
+KillMode=control-group
+TimeoutStopSec=2s
+SendSIGKILL=yes
+Restart=no
+
+# 自主运行只由现场显式启动，不配置开机安装目标。
