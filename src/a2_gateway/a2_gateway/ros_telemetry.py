@@ -9,9 +9,13 @@ import math
 from threading import Event, Lock, Thread
 import time
 
+from .platform_details import IMU_YAW_RATE_MAX_AGE_MS, fresh_details, observation_groups
+
 
 _NS_PER_S = 1_000_000_000
 _NS_PER_MS = 1_000_000
+_IMU_YAW_MIN_INTERVAL_NS = 25 * _NS_PER_MS
+_IMU_YAW_MAX_INTERVAL_NS = IMU_YAW_RATE_MAX_AGE_MS * _NS_PER_MS
 _LOG = logging.getLogger(__name__)
 
 
@@ -28,6 +32,7 @@ def add_ros_arguments(parser):
     group.add_argument("--map-topic", default="/map")
     group.add_argument("--odom-topic", default="/odom")
     group.add_argument("--platform-topic", default="/a2/platform/state")
+    group.add_argument("--platform-details-topic", default="/a2/platform/details")
     group.add_argument("--map-frame", default="map")
     group.add_argument("--odom-frame", default="odom")
     group.add_argument("--base-frame", default="base_footprint")
@@ -128,6 +133,9 @@ class RosTelemetry:
         self._map = None
         self._pose = None
         self._platform = None
+        self._platform_session = None
+        self._details = None
+        self._imu_yaw = None
         self._robot_id = None
         self._model = args.robot_model
         self._clock_ns = 0
@@ -146,7 +154,15 @@ class RosTelemetry:
             )
             sample_qos = QoSProfile(depth=32, reliability=ReliabilityPolicy.BEST_EFFORT)
             self._node.create_subscription(PlatformState, args.platform_topic, self._read_platform, sample_qos)
-            # PC2 的 ODIN1 观测器已独立接收定位消息；只读数据服务只订阅平台状态，
+            # 部署旧版接口包的机器仍能提供基本状态；升级接口后自动启用各传感器详情。
+            try:
+                from a2_interfaces.msg import PlatformDetails
+            except ImportError:
+                _LOG.warning("当前 ROS 接口包没有 PlatformDetails，仅提供基本平台状态")
+            else:
+                self._node.create_subscription(PlatformDetails, args.platform_details_topic,
+                                               self._read_details, sample_qos)
+            # PC2 的 ODIN1 观测器已独立接收定位消息；只读数据服务只订阅平台遥测，
             # 避免额外创建 /map、/odom 和 TF 订阅，也无需加载导航消息及 TF 库。
             if not platform_only:
                 self._subscribe_navigation(sample_qos)
@@ -237,7 +253,51 @@ class RosTelemetry:
             if self._platform is not None and stamp_ns <= self._platform[0]:
                 return
             self._robot_id = message.robot_id
+            self._platform_session = (message.robot_id, message.source, message.source_session_id)
             self._platform = (stamp_ns, time.monotonic_ns(), message.age_ms * _NS_PER_MS, available, values)
+
+    def _read_details(self, message):
+        """同一台 PC2 的四路原厂观测，可分别有效、缺失或过期。"""
+        if (message.schema_version != 1 or message.simulated or message.source != "unitree_sdk2"
+                or not message.robot_id or not message.source_session_id):
+            return
+        stamp_ns = _stamp_ns(message.header.stamp)
+        now_ns = self._node.get_clock().now().nanoseconds
+        if stamp_ns <= 0 or not 0 <= now_ns - stamp_ns <= self._platform_max_ns:
+            return
+        session = (message.robot_id, message.source, message.source_session_id)
+        receipt_ns = time.monotonic_ns()
+        limit_ms = min(message.max_age_ms, self._platform_max_ns // _NS_PER_MS)
+        groups = observation_groups(message, receipt_ns, limit_ms)
+        with self._lock:
+            # 发布器重启后不混用前一会话的电池与新会话的本体模式。
+            if self._platform_session != session:
+                return
+            if self._details and self._details[2] == session and stamp_ns <= self._details[0]:
+                return
+            self._read_imu_yaw_rate(groups["attitude"], session, message.attitude_received_mono_ns)
+            self._details = (stamp_ns, receipt_ns, session, groups)
+
+    def _read_imu_yaw_rate(self, attitude, session, sample_ns):
+        # 用 PC2 上原厂 IMU 回调的单调时刻计算差分。ROS 转发时刻不能区分重复发布的观测。
+        if attitude is None or not math.isfinite(attitude["yaw_rad"]):
+            self._imu_yaw = None
+            return
+        yaw = math.remainder(attitude["yaw_rad"], math.tau)
+        rate = None
+        if self._imu_yaw is not None and self._imu_yaw[0] == session:
+            _, previous_ns, previous_yaw, previous_rate = self._imu_yaw
+            interval = sample_ns - previous_ns
+            if interval < 0:
+                return
+            if interval == 0:
+                attitude["yaw_rate_radps"] = previous_rate
+                return
+            if _IMU_YAW_MIN_INTERVAL_NS <= interval <= _IMU_YAW_MAX_INTERVAL_NS:
+                # 跨越 ±π 时沿最短角差展开，保留左、右转的符号。
+                rate = math.remainder(yaw - previous_yaw, math.tau) * _NS_PER_S / interval
+        self._imu_yaw = (session, sample_ns, yaw, rate)
+        attitude["yaw_rate_radps"] = rate
 
     def _resolve_pose(self, now_ns, steady_ns):
         while self._pending and not _fresh(
@@ -277,7 +337,8 @@ class RosTelemetry:
                     reset_clock = now_ns < self._clock_ns
                     self._clock_ns = now_ns
                     if reset_clock:
-                        self._pose = self._platform = None
+                        self._pose = self._platform = self._platform_session = self._details = None
+                        self._imu_yaw = None
                 if reset_clock and self._buffer is not None:
                     self._pending.clear()
                     self._buffer.clear()
@@ -288,7 +349,8 @@ class RosTelemetry:
             _LOG.exception("ROS telemetry executor stopped")
         finally:
             with self._lock:
-                self._pose = self._platform = None
+                self._pose = self._platform = self._platform_session = self._details = None
+                self._imu_yaw = None
             self._release_ros()
 
     def snapshot(self):
@@ -305,6 +367,14 @@ class RosTelemetry:
                     age_ns = max(self._clock_ns - stamp_ns, steady_ns - receipt_ns) + source_age_ns
                     robot.update(values, online=True, telemetry_stamp_ms=stamp_ns // _NS_PER_MS,
                                  telemetry_age_ms=age_ns // _NS_PER_MS)
+            groups, elapsed_ms = {}, 0
+            if self._details:
+                stamp_ns, receipt_ns, session, readings = self._details
+                if (session == self._platform_session and
+                        _fresh(stamp_ns, receipt_ns, self._clock_ns, steady_ns, self._platform_max_ns)):
+                    groups = readings
+                    elapsed_ms = (steady_ns - receipt_ns) // _NS_PER_MS
+            robot.update(fresh_details(groups, elapsed_ms))
             pose = None
             if self._pose:
                 stamp_ns, receipt_ns, values = self._pose

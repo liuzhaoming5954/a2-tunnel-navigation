@@ -1,4 +1,5 @@
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import { yawTelemetry } from './yawRate.js'
 
 const POLL_INTERVAL_MS = 200
 const VELOCITY_INTERVAL_MS = 100
@@ -65,6 +66,7 @@ export async function request(path, { body, keepalive = false, timeout = 1800, c
 
 export function useGateway() {
   const state = shallowRef(null)
+  const yawRates = shallowRef({ imu: null, sdk: null })
   const map = shallowRef(null)
   const connection = ref('connecting')
   const mapStatus = ref('idle')
@@ -76,6 +78,7 @@ export function useGateway() {
   const pendingStop = shallowRef(null)
   let eventId = 0
   let pollTimer
+  let yawExpiryTimer
   let velocityTimer
   let leaseTimer
   let pollController
@@ -180,6 +183,8 @@ export function useGateway() {
       const wasConnected = connection.value === 'connected'
       const wasOnline = state.value?.robot?.online === true
       state.value = next
+      // PC2 接口失联时清空观测。机身运动状态和 IMU 则各自判定时效。
+      publishYawRates(next.deployment === 'station' && next.pc2_connected !== true ? null : next.robot, startedAt)
       lastPollStartedAt = startedAt
       connection.value = 'connected'
       if (!wasConnected) log('ok', '操作网关已连接')
@@ -199,9 +204,20 @@ export function useGateway() {
       if (disposed) return
       if (connection.value !== 'disconnected') log('warn', `网关离线：${error.message}`)
       connection.value = 'disconnected'
+      publishYawRates()
       if (ownSession.value || phase.value === 'arming') void stop('网关离线，解除控制')
     } finally {
       if (!disposed) pollTimer = setTimeout(poll, POLL_INTERVAL_MS)
+    }
+  }
+
+  function publishYawRates(robot, startedAt = performance.now()) {
+    clearTimeout(yawExpiryTimer)
+    const { imu, sdk, nextExpiryMs } = yawTelemetry(robot, performance.now() - startedAt)
+    yawRates.value = { imu, sdk }
+    // 单独撤下过期遥测，轮询延迟或超时不会留下旧转速，也不会重发控制状态。
+    if (Number.isFinite(nextExpiryMs)) {
+      yawExpiryTimer = setTimeout(() => publishYawRates(robot, startedAt), Math.ceil(nextExpiryMs))
     }
   }
 
@@ -343,6 +359,7 @@ export function useGateway() {
 
   function offline() {
     connection.value = 'disconnected'
+    publishYawRates()
     pollController?.abort()
     void stop('浏览器断网，解除控制')
   }
@@ -363,6 +380,7 @@ export function useGateway() {
     disposed = true
     pageHide()
     clearTimeout(pollTimer)
+    clearTimeout(yawExpiryTimer)
     clearTimeout(velocityTimer)
     clearTimeout(leaseTimer)
     pollController?.abort()
@@ -373,6 +391,6 @@ export function useGateway() {
     document.removeEventListener('visibilitychange', visibility)
   })
 
-  return { state, map, connection, mapStatus, phase, activeDirection, events, fault,
+  return { state, yawRates, map, connection, mapStatus, phase, activeDirection, events, fault,
     limits, available, canArm, canStop, canDrive, arm, stop, beginDirection, endDirection, clearEvents }
 }

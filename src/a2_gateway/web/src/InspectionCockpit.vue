@@ -6,9 +6,11 @@ import MapView from './MapView.vue'
 import OdinPointCloud from './OdinPointCloud.vue'
 import TunnelScene from './TunnelScene.vue'
 import { sampleAlarms, scenePoints, shiftTasks } from './cockpitData.js'
+import { formatImuYawRate } from './yawRate.js'
 
 const props = defineProps({
   state: { type: Object, default: null },
+  yawRates: { type: Object, default: null },
   map: { type: Object, default: null },
   mapStatus: { type: String, default: 'idle' },
   connection: { type: String, default: 'connecting' },
@@ -224,6 +226,7 @@ const detailTitle = computed(() => {
       </div>
       <button type="button" class="ic-kpi" @click="openDetail('robot')">
         <span>机器人本体</span><strong>{{ summaryRobot }}</strong>
+        <span v-if="knownMode !== 'simulator'">IMU 转速 {{ formatImuYawRate(yawRates?.imu) }} °/s</span>
       </button>
       <button type="button" class="ic-kpi" @click="openDetail('dock')">
         <span>电池电量</span><strong class="ic-reading">{{ battery ?? '—' }}<small>%</small></strong>
@@ -247,7 +250,15 @@ const detailTitle = computed(() => {
         <template v-else-if="detail.type==='robot' || detail.type==='dock'">
           <dl><div><dt>遥测来源</dt><dd>{{ source }} · {{ robotStatus }}</dd></div><div><dt>机器人标识</dt><dd>{{ robot.id || '未知' }}</dd></div>
             <div><dt>遥测观测时间</dt><dd>{{ telemetryTime }}</dd></div>
-            <template v-if="detail.type==='robot'"><div><dt>本体故障</dt><dd>未接入</dd></div><div><dt>运动模式</dt><dd>{{ modeName }}</dd></div><div><dt>线速度</dt><dd>{{ online && Number.isFinite(robot.linear_mps) ? robot.linear_mps.toFixed(2) + ' m/s' : '未知' }}</dd></div></template>
+            <template v-if="detail.type==='robot'">
+              <div><dt>本体故障</dt><dd>未接入</dd></div>
+              <div><dt>运动模式</dt><dd>{{ modeName }}</dd></div>
+              <div><dt>线速度</dt><dd>{{ online && Number.isFinite(robot.linear_mps) ? robot.linear_mps.toFixed(2) + ' m/s' : '未知' }}</dd></div>
+              <template v-if="knownMode !== 'simulator'">
+                <div><dt>IMU 转速估计</dt><dd>{{ formatImuYawRate(yawRates?.imu) }} °/s</dd></div>
+                <div><dt>原厂偏航角速度</dt><dd>{{ yawRates?.sdk?.toFixed(3) ?? '—' }} rad/s</dd></div>
+              </template>
+            </template>
             <template v-else><div><dt>电池电量</dt><dd>{{ battery === null ? '未知' : battery+'%' }}</dd></div><div><dt>充电仓连接</dt><dd>{{ sampleBusiness ? '在线 · 本地模拟' : '未接入' }}</dd></div><div><dt>仓体故障</dt><dd>{{ sampleBusiness ? '无故障 · 本地模拟' : '未接入' }}</dd></div><div><dt>充电仓占用</dt><dd>{{ sampleBusiness ? '空闲 · 本地模拟' : '未接入' }}</dd></div><div><dt>充电状态</dt><dd>{{ sampleBusiness ? '未充电 · 本地模拟' : '未接入' }}</dd></div></template>
           </dl><button v-if="detail.type==='dock' && sampleBusiness" class="ic-action" type="button" @click="locatePoint('P03')">在场景中查看回仓交接点 →</button>
         </template>

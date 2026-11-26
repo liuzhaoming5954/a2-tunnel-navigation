@@ -50,6 +50,24 @@ class StationSourceTest(unittest.TestCase):
         self.assertEqual(state["robot"]["id"], "test")
         self.assertIsNone(state["robot"]["battery_percent"])
 
+    def test_station_forwards_imu_rate_and_raw_zero_with_independent_expiry(self):
+        # 上位机完整请求环节扣除传输时间，原厂零和 IMU 估算独立保留。
+        attitude = {"yaw_rad": 0., "yaw_rate_radps": -0.3, "age_ms": 200, "max_age_ms": 500}
+        message = {"deployment": "pc2", "mode": "robot_readonly",
+                   "robot": {"online": True, "attitude": attitude,
+                             "velocity": {"yaw_radps": 0., "age_ms": 200, "max_age_ms": 500}}}
+        for delay_ms, expected in [(49, -0.3), (50, None)]:
+            with (self.subTest(delay_ms=delay_ms), patch.object(self.source, "_get", return_value=message),
+                  patch("a2_gateway.station.time.monotonic_ns", side_effect=[0, delay_ms * 1_000_000])):
+                robot = self.source.state()[1]["robot"]
+                self.assertEqual(robot["attitude"]["yaw_rate_radps"], expected)
+                self.assertEqual(robot["attitude"]["age_ms"], 200)
+                self.assertEqual(robot["attitude"]["yaw_rad"], 0.)
+                self.assertEqual(robot["velocity"]["yaw_radps"], 0.)
+        del attitude["yaw_rate_radps"]
+        with patch.object(self.source, "_get", return_value=message):
+            self.assertIsNone(self.source.state()[1]["robot"]["attitude"]["yaw_rate_radps"])
+
     def test_no_remote_falls_back_to_simulator_or_previous_telemetry(self):
         for value in [dict(mode="simulator", robot={"online": True}, deployment="pc2"),
                       dict(mode="robot_readonly", robot={"online": True}, deployment="station"),

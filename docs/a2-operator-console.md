@@ -36,11 +36,21 @@ python3 scripts/run_a2_console.py --role station \
 
 | 驾驶舱信息 | 来源与显示 |
 | --- | --- |
-| 本体、电量和运动状态 | 上位机转取 PC2 的只读平台状态。原厂发布者没有有效数据时，对应读数显示未知。 |
+| 本体、电量和运动状态 | 上位机转取 PC2 的只读平台状态。机器人本体可查看原厂偏航角速度和 IMU 估算转速。无有效数据时对应读数显示未知。 |
 | ODIN1 点云、二维栅格 | 上位机本地地图。点云面板显示原始文件名、抽样点数和原始点数。 |
 | ODIN1 传感器位置及航向 | PC2 同图重定位。圆点对应传感器 IMU 原点，箭头对应传感器 +X 轴在地图 XY 平面内的投影。机身安装外参有待量测。 |
 | 示意场景与点位 | 本地合成场景，可从示例任务或告警跳转到关联点位。 |
 | 充电仓、任务和告警 | 上位机默认仅显示已接入数据。可在「数据来源」开启已标明来源的本地模拟业务，独立模拟角色默认展示样例。 |
+
+## IMU 偏航转速
+
+本体摘要、详情和维护页以 °/秒显示带符号的 IMU 转速估计。正值表示左转，负值表示右转。「—」表示暂无有效读数。原厂 `rt/lf/sportmodestate.yaw_speed` 通过 `robot.velocity.yaw_radps` 单独保留，界面用 rad/s 显示。
+
+PC2 以 `rt/lf/lowstate` 的 IMU 偏航角为输入，取同一采集会话相邻观测在 ±180° 内的有符号角差，再除以两帧在 PC2 的单调接收时间间隔。用于差分的间隔为 25–250 毫秒。估算在 250 毫秒后过期，重复发布不续期。首帧、新采集会话或无有效偏航角时显示未知。
+
+`robot.attitude.yaw_rate_radps` 是可选的只读字段。对照原厂数据、实测后台记录和现场停稳确认时，可分别查阅估算转速和原厂字段。[机载计算](../src/a2_gateway/a2_gateway/ros_telemetry.py) · [部署与实机记录](implementation-status.md#imu-偏航转速实机验证)
+
+从源码新建 PC2 环境时，先编译并加载包含 `PlatformDetails` 和 `BatteryTelemetry` 的 `a2_interfaces`，再启动原厂只读采集器和 PC2 网关。IMU 话题明细由 `/a2/platform/details` 提供。上位机遇到仅提供基本状态的旧服务时继续显示已有读数，IMU 转速显示「—」。[平台明细消息](../src/a2_interfaces/msg/PlatformDetails.msg)
 
 ## 开发机离线模拟
 
@@ -94,7 +104,7 @@ python3 scripts/package_a2_console.py --role pc2 --output artifacts/a2-pc2-data.
 
    若同时需要启动原厂 SDK 只读状态发布器，在已核对 `A2_SDK_NIC`、`A2_SDK_DOMAIN_ID`、`A2_ROBOT_ID` 并加载对应原厂 Python SDK 后，改用 `A2_ODIN1_POSE_FILE="$ODIN1_SESSION_DIR/pose.json" bash scripts/start_a2_console_readonly.sh`。脚本会启动状态发布器和 PC2 数据接口。
 
-3. **在上位机建立维护通道。** `A2_SSH_TARGET` 指已核对的 PC2 SSH 目标。需要经过 PC4 时按现场配置使用 SSH 跳板。此命令将**上位机的 8766** 接至 **PC2 的 8765**。保留该连接，在另一个终端运行上文的 `station`，浏览器仍打开上位机的 8765。
+3. **在上位机建立维护通道。** `A2_SSH_TARGET` 指已核对的 PC2 SSH 目标。需要经过 PC3 时按现场配置使用 SSH 跳板。此命令将**上位机的 8766** 接至 **PC2 的 8765**。保留该连接，在另一个终端运行上文的 `station`，浏览器仍打开上位机的 8765。
 
    ```bash
    ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:8766:127.0.0.1:8765 "$A2_SSH_TARGET"

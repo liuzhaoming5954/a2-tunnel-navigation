@@ -11,7 +11,7 @@ import './portal.css'
 
 // 只创建一个网关客户端，驾驶舱接收只读快照。维护页卸载时，网关仍可确认停止请求。
 const gateway = useGateway()
-const { state, map, mapStatus, connection, phase } = gateway
+const { state, yawRates, map, mapStatus, connection, phase } = gateway
 const current = ref(readPage())
 const info = computed(() => pageInfo(current.value))
 // 系统管理菜单保留维护遥控入口，各模块继续使用原有哈希地址。
@@ -160,7 +160,7 @@ onBeforeUnmount(() => {
         <aside v-if="current !== 'maintenance' && ['stopping','stop_unconfirmed'].includes(phase)" role="status" class="portal-stop-status">
           {{ phase === 'stopping' ? '正在确认维护控制解除' : '维护控制停止待确认' }} <a href="#/maintenance">查看维护状态</a>
         </aside>
-        <InspectionCockpit v-if="current === 'cockpit'" :state="state" :map="map" :connection="connection" :map-status="mapStatus" />
+        <InspectionCockpit v-if="current === 'cockpit'" :state="state" :yaw-rates="yawRates" :map="map" :connection="connection" :map-status="mapStatus" />
         <MaintenanceConsole v-else-if="current === 'maintenance'" :gateway="gateway" />
         <PatrolTask v-else-if="current === 'tasks' && state?.deployment === 'simulator'"
           :state="state" :connection="connection" />

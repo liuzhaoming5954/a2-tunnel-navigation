@@ -3,11 +3,12 @@ import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import Icon from './Icon.vue'
 import MapView from './MapView.vue'
 import { DIRECTIONS, describeError } from './useGateway.js'
+import { formatImuYawRate } from './yawRate.js'
 
 // 网关由外壳持有，退出维护页后的停止重试仍由同一会话完成。
 const props = defineProps({ gateway: { type: Object, required: true } })
 const {
-  state, map, connection, mapStatus, phase, activeDirection, events, fault,
+  state, yawRates, map, connection, mapStatus, phase, activeDirection, events, fault,
   limits, available, canArm, canStop, canDrive, arm, stop, beginDirection, endDirection, clearEvents,
 } = props.gateway
 
@@ -46,6 +47,8 @@ const clock = new Intl.DateTimeFormat('zh-CN', {
 const isConnected = computed(() => connection.value === 'connected')
 const robot = computed(() => state.value?.robot)
 const robotOnline = computed(() => isConnected.value && robot.value?.online === true)
+const legacyAngular = computed(() => yawRates.value.sdk === null && robotOnline.value
+  && Number.isFinite(robot.value.angular_radps) ? robot.value.angular_radps : null)
 const battery = computed(() => Number.isFinite(robot.value?.battery_percent) && robotOnline.value
   ? Math.max(0, Math.min(100, robot.value.battery_percent))
   : null)
@@ -236,10 +239,15 @@ onBeforeUnmount(() => {
             <dl class="status-details">
               <div><dt>运动模式</dt><dd>{{ robotMode }}</dd></div>
               <div><dt>遥测延迟</dt><dd class="mono">{{ age(robot?.telemetry_stamp_ms, robot?.telemetry_age_ms) }}</dd></div>
+              <div v-if="state?.mode !== 'simulator'">
+                <dt>{{ legacyAngular === null ? '原厂偏航角速度' : '旧版角速度' }}</dt>
+                <dd class="mono">{{ fixed(yawRates.sdk ?? legacyAngular, 3) }} rad/s</dd>
+              </div>
             </dl>
             <div class="velocity-cards">
               <div><span>线速度</span><strong>{{ fixed(robotOnline ? robot?.linear_mps : null) }}</strong><small>m/s</small></div>
-              <div><span>角速度</span><strong>{{ fixed(robotOnline ? robot?.angular_radps : null) }}</strong><small>rad/s</small></div>
+              <div v-if="state?.mode === 'simulator'"><span>角速度</span><strong>{{ fixed(robotOnline ? robot?.angular_radps : null) }}</strong><small>rad/s</small></div>
+              <div v-else><span>IMU 转速估计</span><strong>{{ formatImuYawRate(yawRates.imu) }}</strong><small>°/s</small></div>
             </div>
           </div>
         </section>

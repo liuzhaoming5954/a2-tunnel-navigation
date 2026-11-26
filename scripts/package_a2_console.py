@@ -19,6 +19,7 @@ COMMON_FILES = (
     "src/a2_gateway/a2_gateway/__init__.py",
     "src/a2_gateway/a2_gateway/server.py",
     "src/a2_gateway/a2_gateway/odin1_pose.py",
+    "src/a2_gateway/a2_gateway/platform_details.py",
     "src/a2_gateway/a2_gateway/ros_telemetry.py",
     "src/a2_navigation/a2_navigation/__init__.py",
     "src/a2_navigation/a2_navigation/offline_planner.py",

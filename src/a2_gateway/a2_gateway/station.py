@@ -10,6 +10,7 @@ import time
 from urllib.parse import urlsplit
 
 from .odin1_pose import MAX_AGE_MS, SOURCE, read_odin_object
+from .platform_details import fresh_details
 
 
 _MAX_RESPONSE_BYTES = 65_536
@@ -38,7 +39,7 @@ def _valid_target(goal):
     return all(_finite(goal.get(key)) for key in _TARGET) and abs(goal["yaw_rad"]) <= math.pi
 
 
-def _robot_fields(message):
+def _robot_fields(message, elapsed_ms):
     """只接受 PC2 实机接口。模拟器、旧网关和其他上位机均不能产生实机在线状态。"""
     if message.get("deployment") != "pc2" or message.get("mode") != "robot_readonly":
         raise ValueError("数据源不是 PC2 只读服务")
@@ -56,7 +57,9 @@ def _robot_fields(message):
     # 断流时可保留设备标识，上一帧的电量、速度与模式不能随离线状态透传。
     if not robot["online"]:
         fields = {key: fields[key] if key in ("id", "model") else None for key in _ROBOT_FIELDS}
-    return {**fields, "online": robot["online"]}
+    # IMU 和原厂运动状态来自不同话题。各路按各自的观测时间决定是否转发。
+    # 快照原始年龄交给浏览器，浏览器按整次请求耗时计算显示有效期。
+    return {**fields, **fresh_details(robot, transfer_ms=elapsed_ms), "online": robot["online"]}
 
 
 class StationSource:
@@ -177,10 +180,13 @@ class StationSource:
 
     def state(self):
         # PC2 离线与上位机进程离线是两种状态：本地地图与其他页面仍可读取。
-        robot = {**dict.fromkeys(_ROBOT_FIELDS), "online": False}
+        robot = {**dict.fromkeys(_ROBOT_FIELDS), **fresh_details({}), "online": False}
         reason = None
         try:
-            robot = _robot_fields(self._get("/api/robot/state"))
+            started_ns = time.monotonic_ns()
+            message = self._get("/api/robot/state")
+            elapsed_ms = (time.monotonic_ns() - started_ns) // 1_000_000
+            robot = _robot_fields(message, elapsed_ms)
         except (OSError, HTTPException):
             reason = "pc2_unavailable"
         except (ValueError, TypeError, OverflowError, RecursionError):
