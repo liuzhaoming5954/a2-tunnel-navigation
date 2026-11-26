@@ -1,0 +1,21 @@
+[Unit]
+Description=A2 上位机实体方向键采样
+After=network.target
+
+[Service]
+# 设备由现场固定，不扫描键盘。SSH 隧道和浏览器独立于本进程。
+User=root
+EnvironmentFile=/etc/a2/keyboard-hold-station.env
+ExecStart=/usr/bin/python3 -sB /usr/local/libexec/a2-keyboard-hold-station station --device ${A2_KEYBOARD_DEVICE}
+Restart=on-failure
+RestartSec=1
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target

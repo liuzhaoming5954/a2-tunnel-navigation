@@ -1,0 +1,18 @@
+[Unit]
+Description=A2 驾驶舱机载遥控网关
+After=network.target a2-cockpit-telemetry.service
+
+[Service]
+# 和只读网关订阅同一个机载 ROS 域。原只读端口及其强制 SSH 命令仍独立运行。
+Type=exec
+User=unitree
+EnvironmentFile=/etc/a2/cockpit-telemetry.env
+Environment=PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+LoadCredential=manual.key:/etc/a2/cockpit-manual.key
+ExecStart=/bin/bash /usr/local/libexec/a2-cockpit-manual-gateway
+NoNewPrivileges=yes
+UMask=0077
+Restart=on-failure
+RestartSec=3s
+
+# 现场显式开启遥控维护窗口，启动网关不启动发令进程。

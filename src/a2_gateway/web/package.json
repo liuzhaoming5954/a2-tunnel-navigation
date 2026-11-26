@@ -1,0 +1,20 @@
+{
+  "name": "a2-operator-console",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "test": "npm run test:manual",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test:manual": "node test/manual-control.mjs"
+  },
+  "dependencies": {
+    "vue": "3.5.24"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "5.2.1",
+    "vite": "6.3.5"
+  }
+}

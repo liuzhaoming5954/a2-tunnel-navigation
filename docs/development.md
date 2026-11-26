@@ -15,15 +15,15 @@
 
 Humble 官方二进制目标包含 Ubuntu 22.04 的 amd64/arm64。本机宿主是 24.04，故候选方案使用容器，不直接混装 Jammy 软件源。若 M0 确认 A2 采用其他受支持组合，则同步调整本机镜像、CI 和依赖锁定；不能把本机 Jazzy 构建成功作为 Humble 已验证。[ROS 官方安装文档源码](https://github.com/ros2/ros2_documentation/blob/humble/source/Installation/Ubuntu-Install-Debs.rst)
 
-当前 `a2_mission`、`a2_storage` 为 `in_progress`，已实现纯 Python 核心与测试；公共接口与平台只读包也已进入 `in_progress`，bringup mock 组合也已进入 `in_progress`，其他 7 个包仍为 `planned`。已实现范围见[实现进度](implementation-status.md)。正式 `third_party/dependencies.repos` 仍为空，待 M0 核实后登记；本机试验版本单独锁定在[建图候选清单](../third_party/mapping-candidate.repos)。不存在可构建 ROS 包时，`colcon` 执行成功或发现零个包，均不能记作编译/测试通过。
+任务、存储、公共接口、平台和 bringup 已有五个可构建 ROS 2 包。导航目录包括离线规划工具与 PC2 单点动作客户端。单点目标的提交、反馈、取消和重试已在开发机联调，底盘执行与停车待实机验证。正式依赖待 M0 核实后登记，本机试验依赖单独记录。[实现进度](implementation-status.md) · [建图候选清单](../third_party/mapping-candidate.repos)
 
-本机已完成官方 DLIO `feature/ros2` 提交 `c8acc37100e349d70a9d8432d656cbce7e5072cd` 的 Jazzy/x86_64 候选构建，源码位于 `third_party/src/direct_lidar_inertial_odometry`，无本地修改和子模块。本轮候选 overlay 位于 `/tmp/a2-dlio-candidate-install`，需先加载 `/opt/ros/jazzy/setup.bash`，再显式加载该目录的 `local_setup.bash`；系统 underlay 仍不提供 DLIO。`/tmp` 是本机临时构建位置，不能当作 A2 发布路径。详细记录见[建图准备状态](mapping-readiness.md)；实际数据适配、完整建图及 A2/Humble 验证仍待。
+本机已完成官方 DLIO `feature/ros2` 固定提交的 Jazzy/x86_64 基线构建。真实数据回放使用单独构建的试验 overlay，启动时记录源码补丁、参数、回放方式和输出位置。A2 的正式建图依赖与 ARM64 构建待验证。[候选版本与重建](mapping-readiness.md) · [最新回放结果](implementation-status.md)
 
-DLIO/RTAB-Map 已通过本机回环网络上的无输入启动检查，确认进程存活、隔离输入订阅与 `use_sim_time=true`。该检查没有 bag 输入；源码中点云/里程计的时间与坐标、TF 发布、QoS 和去畸变退化行为仍需适配验证，不能据此报告 SLAM 数据通路通过。
+建图验证使用本机回环网络和独立 ROS 域。从无输入启动检查推进到实机录包回放，已验证前雷达与配套 IMU 的点时间、同步点云和位姿、整圈建图与候选闭环。地图尺度、重定位和机载负载按对应阶段继续核验。[开发进度说明](implementation-status.md)
 
 ## 2. 每次变更的开发闭环
 
-维护连接、软件验证和原装传感器接入核查已开展，现场结果保存于私有记录。按[官方接口说明](a2-sensor-interfaces.md)核查目标环境、消息、时间基准和外参，再按[实机录包与建图验证](mapping-capture.md)准备短包与路线采集，在隔离环境回放验证 DLIO 和 RTAB-Map。当前没有真实录包或完整建图；新增巡检载荷接入后移，已完成的 [mock 任务演示](mock-mission.md)保留为软件回归，M0 实机准入条件仍须逐项验证。
+新 A2 的前雷达和配套 IMU 已完成断网整圈录包与本机闭环复测，现场原始数据保存在受控目录。地图几何、尺度与重定位进入下一轮核验。M0 实机控制权与停车待验证，新增巡检载荷按安装进度接入。[录包指南](mapping-capture.md) · [首次受控运动与停车验证](a2-first-motion-test.md)
 
 1. 从 `main` 建立短期功能分支，明确修改影响的模块、接口、配置和验收用例。
 2. 在本机完成实现与对应测试，运行仓库检查；使用 mock 或固定数据回放复现故障。控制策略测试覆盖真实状态转换、超时、取消和恢复，不只检查消息能够发布。
@@ -63,7 +63,7 @@ docker run --rm -it --network none \
 ```bash
 source /opt/ros/humble/setup.bash
 colcon list --base-paths src --packages-select a2_interfaces a2_platform a2_storage a2_mission a2_bringup
-# 确认实际发现五个包；其他 planned 目录尚无 package.xml。
+# 确认实际发现的 ROS 2 包，离线规划工具独立运行。
 colcon build --base-paths src --packages-select a2_interfaces a2_platform a2_storage a2_mission a2_bringup --symlink-install \
   --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo
 colcon test --base-paths src --packages-select a2_interfaces a2_platform a2_storage a2_mission a2_bringup --event-handlers console_direct+
@@ -73,6 +73,43 @@ colcon test-result --verbose
 构建后另开终端加载 `/opt/ros/humble/setup.bash` 和 `install/local_setup.bash` 再启动测试进程；不要在已经加载旧 overlay 的终端继续构建。`build/`、`install/`、`log/` 仅为本平台生成物，不提交或复制到另一架构。开发使用 `--symlink-install`，发布采用非链接安装并检查产物不依赖开发源码路径。[colcon 官方教程](https://github.com/ros2/ros2_documentation/blob/humble/source/Tutorials/Beginner-Client-Libraries/Colcon-Tutorial.rst)
 
 纯逻辑测试、ROS 集成测试和回放测试各自记录用例数及结果；空测试集不得代表功能已验证。本机 Python 3.12 只用于仓库工具，业务 Python 的兼容性由目标容器和 A2 环境验证。
+
+### 3.1 ODIN1 固件升级后的开发机验证
+
+固件由用户按厂商流程升级。升级完成后，在开发机建立独立版本对照；此前的建图失败和清理通过记录仍属于旧组合，不能直接作为新固件的验收结果。[ODIN1 联调记录](implementation-status.md)
+
+1. **固定本轮版本。** 保留升级前的程序、SDK 摘要与日志；记录本轮固件包版本、设备实际读回的各模块版本、开发机系统/架构、SDK 版本、源码及程序摘要。向厂商核对固件与主机 SDK 的配套关系，不仅比较版本字符串大小。
+2. **先验证主机程序。** 当前本地工具静态链接厂商 SDK；仅升级设备固件不会替换可执行文件中的旧库。采用其他 SDK 时，重新核对静态库及 API/ABI 头文件摘要并构建。USB 清理兼容层针对固定版本库的重复释放缺陷，须按新组合重新评估保留、调整或移除，不能只更新摘要便沿用。先通过受影响的模拟 SDK 回归和清理层 ASAN 检查，再接设备核对实际退出收尾。
+3. **人工完成保存与停止。** 操作员在场时使用新的受控运行目录和可见终端。在 v0.14.5 上选择 `LIDAR_MODE_SLAM` 并读回 `map_mode=1`。等开流成功，再写入并读回 `save_map=0`。确认日志出现 `MAPPING_STARTED` 后开始采集。加密日志按同版接口约定启用。人工移动采集并停稳后按 `s`，只有查询返回 `rc=0 value=0`、取图接口成功且实际 `.bin` 非空，才记为保存取回成功。内部建图不以主机收到点云为前提。连续新保存保持至少 5 秒间隔；超时保留会话和记录，由人工重试，不主动清零完成标志。
+4. **核对取消和退出。** 取图后人工按 `c`，确认 SLAM 停流、切换 RAW 成功；再按 `q`，核对停流、注销回调、关闭设备、销毁句柄和 SDK 反初始化的返回值及退出码。保存期间的 `c/q` 应继续排队；Ctrl+C/SIGTERM 属于明确中断，不能记为完整保存流程通过。新组合需确认无重复释放或其他异常退出，并将结果与地图保存结果分别登记。
+
+地图、标定、设备加密日志、操作记录和运行快照保存在受控目录；证据索引记录版本、时间、文件大小及校验值，公开文档仅保存脱敏结论。开发机通过后，再按机载目标的实际 CPU 架构和系统版本验证。
+
+### 3.2 PC2 上的 ODIN1 两点重定位
+
+1. 在 PC2 核对地图校验值和驱动版本。以里程计模式启动 v0.14.5 驱动，通过 `/odin1/set_reloc_map` 传入地图在 PC2 上的绝对路径。等日志出现该路径对应的 `Relocalization map swap completed`，再调用 `/odin1/set_slam_mode` 切到模式 2，检查服务返回值。
+2. 确认驱动已收到重定位变换，且终端持续刷新同一设备时刻的里程计与地图变换。驱动发布的两个变换分别把 IMU 和地图坐标变换到 `odom`。计算 `T_map_imu = inverse(T_odom_map) × T_odom_imu`，显示 ODIN1 IMU 原点的 X、Y、Z（米）。航向取 IMU 的 +X 轴在地图 XY 平面上的投影，从地图 +X 向 +Y 为正（度）。
+3. 现场人员用原厂遥控器行走，在两个已知点按同一传感器参考位置对准、停稳并标记。此轮在每次标记后采集约 0.8 秒，取窗口中间帧。复核时计算水平直线间距和带符号的航向变化。有独立测量的参考位置或朝向时，逐点计算误差。厂商 v0.14.5 在模式 2 收到首条重定位 TF 时就会打印 `relocalization success!`。[驱动回调](https://github.com/manifoldsdk/odin_ros_driver/blob/9487890acd648f1c7647576d1ad2b04dd7fd3677/src/host_sdk_sample.cpp#L1327)
+4. 两点记录完成后恢复模式 0，核对服务回执、停流结果和驱动退出码。测点坐标、轨迹和设备日志保存在受控目录。[本轮实测记录](implementation-status.md#odin1-内部建图与固件交接)
+
+### 3.3 巡检与单点导航的开发机复测
+
+在开发机仓库根目录打开 Bash。以下 20 项测试使用 ROS 2 Jazzy、Fast DDS、本机回环和合成动作服务，覆盖两点巡检状态机、双端 HTTP、单点动作的成功与取消、ODIN1 机身位姿桥以及导航启动时的话题重映射。域 196 供本机独立复测使用。
+
+```bash
+source /opt/ros/jazzy/setup.bash
+export ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=196 RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+export A2_SINGLE_GOAL_ROS_TEST=1 A2_RUN_LOCAL_NAV2_LINK=1
+export PYTHONPATH="$PWD:$PWD/scripts:$PWD/src/a2_gateway:$PWD/src/a2_navigation${PYTHONPATH:+:$PYTHONPATH}"
+python3 -m unittest \
+  src/a2_gateway/test/test_patrol.py \
+  src/a2_gateway/test/test_single_goal_link.py \
+  src/a2_navigation/test/test_single_goal_ros.py \
+  scripts/test/test_publish_odin1_navigation_pose.py \
+  scripts/test/test_pc2_single_goal_nav2_launch.py
+```
+
+浏览器复测两点巡检时，在模拟角色中下发停留时间不同的两个目标，比对事件表中每点的「已停稳」和「停留结束」时刻。单点导航的现场交接从校验两端离线包和 PC2 静止联调开始，经过候选速度、取消与停车检查后，再进行实机到点验收。[两点模拟操作](a2-operator-console.md#两点模拟巡检) · [PC2 单点导航](pc2-single-goal.md)
 
 ## 4. mock、回放和硬件隔离
 

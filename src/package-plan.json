@@ -26,22 +26,22 @@
     {
       "name": "a2_localization",
       "path": "src/a2_localization",
-      "status": "planned",
-      "implementation": "C++17",
+      "status": "in_progress",
+      "implementation": "Python 3 本机位姿换算，C++17 机载节点待实现",
       "responsibility": "点云/时间/位姿适配、地标质量与定位健康"
     },
     {
       "name": "a2_navigation",
       "path": "src/a2_navigation",
-      "status": "planned",
-      "implementation": "C++17",
+      "status": "in_progress",
+      "implementation": "Python 3 离线规划与指令预演，C++17 现场执行待实现",
       "responsibility": "固定路线执行、路线进度和桩前对准"
     },
     {
       "name": "a2_safety",
       "path": "src/a2_safety",
-      "status": "planned",
-      "implementation": "C++17",
+      "status": "in_progress",
+      "implementation": "Python 3 仲裁原型，目标 C++17",
       "responsibility": "健康汇总、运动授权、速度仲裁和防撞配置"
     },
     {
@@ -68,8 +68,8 @@
     {
       "name": "a2_gateway",
       "path": "src/a2_gateway",
-      "status": "planned",
-      "implementation": "Python 3",
+      "status": "in_progress",
+      "implementation": "Python 3 维护网关与 Vue 3 上位机",
       "responsibility": "维护期WSS/HTTPS连接、命令映射和成果同步"
     },
     {

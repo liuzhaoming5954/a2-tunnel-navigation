@@ -1,0 +1,22 @@
+[Unit]
+Description=A2 停车锁存复位请求
+
+[Service]
+# 系统只交入本机 Unix 连接。程序固定复位流程，按对端身份和实时机身反馈再次校验。
+Type=exec
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+Environment=A2_STOP_DOMAIN=0
+EnvironmentFile=/etc/a2/remote-stop.env
+ExecStart=/usr/bin/env -- ${A2_STOP_PYTHON} -sB /usr/local/libexec/a2-stop-reset serve --interface ${A2_STOP_INTERFACE} --domain ${A2_STOP_DOMAIN}
+ExecStopPost=/usr/bin/env -- ${A2_STOP_PYTHON} -sB /usr/local/libexec/a2-stop-reset recover
+RuntimeDirectory=a2-stop-reset
+RuntimeDirectoryMode=0700
+# 多个请求实例共用串行锁和恢复标志，状态请求结束时不能删除目录。
+RuntimeDirectoryPreserve=yes
+RuntimeMaxSec=20s
+TimeoutStopSec=10s
+PrivateTmp=yes
+NoNewPrivileges=yes
+UMask=0077

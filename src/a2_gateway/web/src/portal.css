@@ -1,0 +1,179 @@
+/* 顶部保留固定的导航高度，主内容独占下方画布，两端内边距与驾驶舱对齐。 */
+.portal {
+  --portal-bar-height: 57px;
+  --paper: #f2f3f2;
+  --ink: #17283b;
+  --action: #325583;
+  --portal-muted: #536477;
+  --portal-line: #cdd3d7;
+  min-height: 100vh;
+  color-scheme: light;
+  color: var(--ink);
+  background: var(--paper);
+}
+
+/* 页面底色扩展到整个视口，短页和尚在加载的地图底部也保持同色。 */
+.portal.is-cockpit { color-scheme: dark; background: #121417; }
+
+.portal a:focus-visible, .portal button:focus-visible { outline: 2px solid #4470a8; outline-offset: 2px; }
+.portal-skip {
+  position: fixed; inset: -80px auto auto 12px; z-index: 200;
+  padding: 10px 16px; border-radius: 4px; background: #fff; color: var(--action);
+}
+.portal-skip:focus { top: 6px; }
+.portal-bar {
+  position: relative; z-index: 12;
+  display: flex; align-items: center; gap: clamp(16px, 3vw, 41px);
+  height: var(--portal-bar-height); padding: 0 clamp(16px, 2.5vw, 36px);
+  font-family: "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  color-scheme: dark;
+  border-bottom: 1px solid #44484b; background: #1b1d20; color: #e0e2dc;
+}
+.portal-bar a:focus-visible, .portal-bar button:focus-visible { outline-color: #f3986d; }
+.portal-brand {
+  display: inline-flex; flex: none; align-items: center; gap: 12px; white-space: nowrap;
+  color: inherit; text-decoration: none;
+}
+.portal-brand strong { font-size: 16px; font-weight: 750; letter-spacing: .04em; }
+.portal-mark {
+  display: grid; place-items: center; width: 31px; height: 28px;
+  clip-path: polygon(0 0, 100% 0, 100% 75%, 77% 100%, 0 100%);
+  background: #e04f16; color: #121417;
+}
+.portal-nav-list { align-self: stretch; display: flex; gap: clamp(13px, 1.9vw, 27px); }
+.portal-nav-group { position: relative; display: flex; }
+.portal-nav-tab {
+  position: relative; display: flex; align-items: center; white-space: nowrap;
+  padding: 0; border: 0; background: transparent; color: #b0b5b6;
+  font-size: 13px; text-decoration: none; line-height: 1.4;
+}
+.portal-nav-tab:hover, .portal-nav-tab[aria-expanded=true] { color: #fff; }
+.portal-nav-tab[aria-current=page], .portal-nav-tab.is-current { color: #f0eee7; font-weight: 700; }
+.portal-nav-tab.is-current::after, .portal-nav-tab[aria-current=page]::after {
+  content: ""; position: absolute; inset: auto 0 -1px; height: 3px; background: #e04f16;
+}
+.portal-nav-tab:focus-visible { outline-offset: -2px; }
+.portal-subnav {
+  position: absolute; z-index: 2; top: 100%; left: -12px; min-width: 152px;
+  padding: 5px; background: #24282c; color: #d9dddc; border: 1px solid #565c60;
+  box-shadow: 0 6px 14px #10121444;
+}
+.portal-subnav a {
+  display: flex; align-items: center; min-height: 37px; padding: 5px 12px;
+  color: inherit; font-size: 13px; text-decoration: none;
+}
+.portal-subnav a:hover, .portal-subnav a[aria-current=page] { color: #f2eee7; background: #373c40; }
+.portal-subnav a:focus-visible { outline-color: #f3986d; outline-offset: -2px; }
+.portal-chevron, .portal-mobile-toggle, .portal-nav-close, .portal-scrim { display: none; }
+.portal-link-state {
+  display: flex; align-items: center; gap: 19px; flex: none; margin-left: auto;
+  color: #c1c6c5; font-size: 12px; line-height: 1.4; letter-spacing: .02em;
+}
+.portal-indicator { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.portal-indicator + .portal-indicator { border-left: 1px solid #4a4f54; padding-left: 18px; }
+/* 灯形与文字配合表达连接结果；空心灯表示掉线，未取得状态时使用虚线环。 */
+.portal-indicator i { flex: none; width: 8px; height: 8px; border: 1px solid #a3a7aa; border-radius: 50%; }
+.portal-indicator.is-online i { background: #3b7a9e; border-color: #91b4c6; }
+.portal-indicator.is-unknown i { border-style: dashed; }
+.portal-indicator.is-simulation i { background: #b8c0c8; border-color: #b8c0c8; border-radius: 0; }
+.portal-work, .portal-content { min-width: 0; }
+.portal-content:focus { outline: none; }
+.portal-stop-status { padding: 10px 22px; color: #573c1b; background: #fff0cb; font-size: 13px; }
+.portal-stop-status a { color: inherit; margin-left: 10px; }
+
+/* 预留模块沿用页面标题和状态标签，详情单独排版，返回链接可直接回到工作区。 */
+.portal-reserved { padding: 25px clamp(16px, 2.4vw, 36px); }
+.portal-page-heading { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; }
+.portal-page-heading h1 { color: var(--ink); font-size: clamp(24px, 2vw, 32px); line-height: 1.25; }
+.portal-planned {
+  padding: 4px 9px;
+  border: 1px solid var(--portal-line);
+  border-radius: 5px;
+  color: #5e6072;
+  background: #faf9f7;
+  font-size: 11px;
+}
+.portal-empty {
+  padding: clamp(28px, 4.8vw, 66px) clamp(22px, 3.6vw, 50px);
+  border: 1px solid var(--portal-line);
+  border-radius: 10px;
+  background: #fff;
+}
+.portal-empty-icon {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  margin-bottom: 21px;
+  border-radius: 8px;
+  color: var(--action);
+  background: #e9ecfb;
+}
+.portal-empty h2 { font-size: 20px; line-height: 1.4; }
+.portal-empty p { margin: 8px 0 20px; max-width: 44ch; color: var(--portal-muted); font-size: 14px; line-height: 1.75; }
+.portal-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  color: var(--action);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.portal-back:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+/* 维护页按工作区可用宽度换行，给地图及方向键保留最小显示宽度。 */
+.portal .maintenance-shell {
+  min-height: calc(100vh - var(--portal-bar-height));
+  max-width: none;
+  padding: 0 clamp(14px, 2vw, 26px) 24px;
+  color-scheme: dark;
+  color: var(--text);
+  background: var(--bg);
+}
+@media (min-width: 901px) and (max-width: 1190px) {
+  .maintenance-shell .dashboard { grid-template-columns: minmax(195px, 225px) minmax(0, 1fr); }
+  .maintenance-shell .telemetry-stack { grid-column: 1 / -1; grid-template: auto / repeat(2, minmax(0, 1fr)); }
+}
+
+/* 窄屏把同一组导航收进抽屉，保留键盘浏览的顺序和顶栏两端的连接状态。 */
+@media (max-width: 860px) {
+  .portal-bar { gap: 12px; padding-inline: 16px; }
+  .portal-mobile-toggle, .portal-nav-close {
+    display: grid; place-items: center; flex: none; width: 44px; height: 44px;
+    padding: 0; border: 0; border-radius: 4px; background: transparent; color: #ecf2ff;
+  }
+  .portal-mobile-toggle { margin-left: -8px; }
+  .portal-nav-close { margin-left: auto; }
+  .portal-scrim { position: fixed; z-index: 1; inset: 0; display: block; border: 0; background: #101214ad; }
+  .portal-nav-list {
+    position: fixed; z-index: 2; inset: 0 auto 0 0; display: none; flex-direction: column;
+    gap: 2px; width: min(285px, 86vw); overflow: auto; overscroll-behavior: contain;
+    padding: 10px 12px 20px; background: #1b1d20;
+  }
+  .portal-nav-list.is-open { display: flex; }
+  .portal-nav-group { display: block; }
+  .portal-nav-tab { width: 100%; min-height: 44px; padding: 4px 12px; border-radius: 4px; font-size: 14px; }
+  .portal-nav-tab[aria-current=page], .portal-nav-tab.is-current { background: #383b3e; }
+  .portal-nav-tab.is-current::after, .portal-nav-tab[aria-current=page]::after { display: none; }
+  .portal-chevron { display: block; margin-left: auto; }
+  .portal-nav-tab[aria-expanded=true] .portal-chevron { transform: rotate(90deg); }
+  .portal-subnav {
+    position: static; margin: 2px 0 5px 20px; padding: 0 6px; border: 0; border-left: 1px solid #5e6469;
+    border-radius: 0; background: transparent; color: #d9dddc; box-shadow: none;
+  }
+  .portal-subnav a { min-height: 44px; }
+  .portal-subnav a:hover, .portal-subnav a[aria-current=page] { background: #383b3e; color: #fff; }
+}
+@media (max-width: 570px) {
+  .portal-bar { gap: 6px; padding-inline: 12px; }
+  .portal-brand { gap: 7px; }
+  .portal-brand strong { font-size: 14px; letter-spacing: 0; }
+  .portal-mark { width: 28px; height: 28px; }
+  .portal-mark svg { width: 19px; height: 19px; }
+  .portal-link-state { flex-direction: column; align-items: flex-start; gap: 2px; font-size: 11px; }
+  .portal-indicator + .portal-indicator { border: 0; padding: 0; }
+  .portal-indicator i { width: 6px; height: 6px; }
+}

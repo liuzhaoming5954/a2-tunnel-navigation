@@ -20,8 +20,12 @@ jobs:
           persist-credentials: false
       - name: Validate repository scaffolding
         run: python3 scripts/check_repository.py
-      - name: Test capture and bag inspection contracts
-        run: python3 -m unittest discover -s scripts/test -v
+      - name: Install diagnostic test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3-numpy python3-yaml
+      - name: Test capture, map and diagnostic tools
+        run: /usr/bin/python3 -m unittest discover -s scripts/test -v
       - name: Test SQLite journal
         env:
           PYTHONPATH: src/a2_storage
@@ -38,4 +42,16 @@ jobs:
         env:
           PYTHONPATH: src/a2_bringup
         run: python3 -m unittest discover -s src/a2_bringup/test -v
+      - name: Test offline map planning and single-goal navigation
+        env:
+          PYTHONPATH: src/a2_navigation
+        run: /usr/bin/python3 -m unittest discover -s src/a2_navigation/test -v
+      - name: Test maintenance motion arbitration
+        env:
+          PYTHONPATH: src/a2_safety
+        run: python3 -m unittest discover -s src/a2_safety/test -v
+      - name: Test patrol and single-goal gateway over loopback
+        env:
+          PYTHONPATH: src/a2_gateway:src/a2_navigation
+        run: /usr/bin/python3 -m unittest discover -s src/a2_gateway/test -v
       # These checks do not grant robot motion authorization.

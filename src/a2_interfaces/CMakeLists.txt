@@ -8,6 +8,8 @@ find_package(geometry_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PlatformState.msg"
+  "msg/BatteryTelemetry.msg"
+  "msg/PlatformDetails.msg"
   "msg/MissionStatus.msg"
   "msg/CommandReceipt.msg"
   "srv/GetPlatformState.srv"

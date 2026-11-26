@@ -1,0 +1,17 @@
+[Unit]
+Description=A2 local inspection cockpit
+# 站端可脱机查看实测点云。后台主连接自行重试，浏览器轮询同一回环地址。
+Wants=a2-cockpit-link.service a2-cockpit-relay.socket
+After=a2-cockpit-relay.socket
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+EnvironmentFile=%h/.config/a2-cockpit/station.env
+NoNewPrivileges=yes
+ExecStart=/usr/bin/python3 ${A2_STATION_ROOT}/scripts/run_a2_console.py --role station --host 127.0.0.1 --port 8765 --pc2-url http://127.0.0.1:8766
+Restart=on-failure
+RestartSec=3s
+
+[Install]
+WantedBy=default.target

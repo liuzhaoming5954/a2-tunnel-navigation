@@ -1,6 +1,6 @@
 # 原装传感器接入与建图准备
 
-维护连接、软件验证和原装传感器接入核查已开展，现场环境、数据与时间核查结果保存在私有记录中。公开部分保留候选依赖、无输入启动与适配要求；当前没有真实录包或完整建图，M0 未关闭，新增巡检载荷接入后移。官方规则见[原装传感器接口](a2-sensor-interfaces.md)，采集步骤见[采集指南](mapping-capture.md)。
+已完成实机维护连接、原装前雷达和 IMU 断网采集，以及本机环线隔离回放，生成了地图及闭环候选。现场环境、录包和时间核查结果保存在私有记录中。本页保留初始候选构建、无输入启动和数据适配要求。整场覆盖与定位仍需验证，M0 未关闭，新增巡检载荷接入后移。[实现进度](implementation-status.md) · [原装传感器接口](a2-sensor-interfaces.md) · [采集指南](mapping-capture.md)
 
 ## 1. 已完成和仍待验证
 
@@ -11,7 +11,7 @@
 | RTAB-Map | 系统安装 `rtabmap_slam` / `rtabmap_util` 0.23.13；有 `rtabmap` 可执行入口 | 外部 DLIO 供里程计时可以直接启动节点，首条无界面链路不必依赖 `rtabmap_launch` / `rtabmap_odom` |
 | 进程启动 | 在本机回环网络、独立 ROS domain 79 启动 DLIO odom 和 RTAB-Map，确认进程存活、输入订阅和 `use_sim_time=true` | 没有输入包和有效算法输出；启动时 TF 隔离，不加载 SDK |
 | 采集工具 | 21 项测试与合成 ROS 录包检查通过；可制作独立离线源码工具包 | 不含 ROS/驱动/标定，不是机器人镜像或完整离线依赖包 |
-| 维护与地图 | 已开展维护连接和软件验证，现场结果保存在私有记录；继续准备原始短包、时间/标定核查及隔离回放 | 当前没有真实录包或完整建图；不能以编译、接口连通或合成录包关闭 M0/M1 |
+| 维护与地图 | 已回传原装前雷达、IMU 的断网实机录包，并用试验环境生成环线地图及闭环候选 | 待验证整场覆盖、分段对齐、定位和路线发布条件。M0/M1 以相应验收证据关闭 |
 
 DLIO 源码保存在忽略的 `third_party/src/direct_lidar_inertial_odometry/`。本轮构建目录为 `/tmp/a2-dlio-candidate-build`，安装 overlay 为 `/tmp/a2-dlio-candidate-install`，日志为 `/tmp/a2-dlio-candidate-log`；这些是本机临时产物，可能被清理，不复制给 ARM64。系统 `/opt/ros/jazzy` underlay 本身未新增 DLIO，需要显式加载候选 overlay。
 
@@ -54,7 +54,7 @@ ros2 pkg executables rtabmap_slam
 
 ## 3. 源码发现的接入待项
 
-下列事实来自固定 [DLIO 提交](https://github.com/vectr-ucla/direct_lidar_inertial_odometry/tree/c8acc37100e349d70a9d8432d656cbce7e5072cd)，须在开发适配和首包回放中逐项解决；目前未提供一键完整建图启动器。
+下列事实来自初始候选的固定 [DLIO 提交](https://github.com/vectr-ucla/direct_lidar_inertial_odometry/tree/c8acc37100e349d70a9d8432d656cbce7e5072cd)，供更换设备、录包或版本时核查。已完成的实包回放使用试验脚本和对应 overlay，通用建图启动器待实现。
 
 | 项目 | 固定版本的实际行为 | 接入工作 |
 |---|---|---|
@@ -92,4 +92,4 @@ python3 scripts/package_capture_tools.py --output artifacts/a2-capture-kit.zip
 
 现场最新材料按连接手册从公共仓库的干净固定提交生成，并配套 `SOURCE_COMMIT.txt` 与外层校验清单；保留旧包作为历史产物，不以旧包替代新版手册对应材料。A2 维护时可联网则可直接克隆相同 SHA，需完整历史且无外网时可传离线 bundle，三条路径使用相同的采集与回传目录。
 
-继续按[官方接口](a2-sensor-interfaces.md)与采集指南核查目标数据、字段、时序和外参，准备原始短包与环境记录；完成适配和候选问题修正后，再隔离运行 DLIO→RTAB-Map 并保存、重载与评估地图。现场结果保持私有；尚无真实录包或完整建图，M0 未关闭。
+后续分区采集继续按[原装传感器接口](a2-sensor-interfaces.md)与采集指南核查字段、时序和外参，记录采集环境。回传后隔离运行 DLIO→RTAB-Map，检查分段重叠区、闭环和地图重载，按 M1 要求验证定位并归档证据。现场结果保持私有，M0 未关闭。
