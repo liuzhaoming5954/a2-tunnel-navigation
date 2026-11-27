@@ -8,7 +8,7 @@ import os
 import re
 import stat
 
-from .motion import (_action_request, _command_receipt, _control_action_fields, _finite_number,
+from .motion import (_acquire_request, _action_request, _command_receipt, _control_action_fields, _finite_number,
                      _session_id, _velocity_request)
 
 
@@ -29,6 +29,7 @@ BROWSER_COMMANDS = {
 PC2_COMMANDS = {path.replace("/control/", "/manual/"): method for path, method in BROWSER_COMMANDS.items()}
 PROTOCOL = "a2-manual-v1"
 STOP_COMMANDS = frozenset(("stop", "action_release"))
+ACTIVATION_WAIT_REASONS = frozenset(("motion_arbiter_unavailable", "local_authorization_required"))
 # 复位只通过独立维护通道转发，不加入速度和会话命令表。
 PC2_STOP_RESET_PATH = "/api/manual/stop-reset"
 BROWSER_STOP_RESET_PATH = "/api/control/stop-reset"
@@ -95,8 +96,14 @@ def control_state(control):
     reason = control.get("reason")
     if type(available) is not bool or type(armed) is not bool or not isinstance(reason, str):
         return unavailable("manual_invalid_response", source)
+    capability = {"reusable_hold": True} if control.get("reusable_hold") is True else {}
     if not available:
-        return unavailable(reason[:160], source)
+        result = unavailable(reason[:160], source)
+        if (source == "unitree" and not armed and reason in ACTIVATION_WAIT_REASONS
+                and control.get("activation_available") is True):
+            result["activation_available"] = True
+            result.update(capability)
+        return result
     limits = control.get("limits")
     if not isinstance(limits, dict):
         return unavailable("manual_invalid_limits", source)
@@ -110,14 +117,14 @@ def control_state(control):
     except ValueError:
         return unavailable("manual_invalid_response", source)
     return {"available": True, "armed": armed, "source": source, "reason": reason[:160],
-            "limits": {k: limits[k] for k in caps}, **action}
+            "limits": {k: limits[k] for k in caps}, **action, **capability}
 
 
 def valid_command(operation, payload):
     if not isinstance(payload, dict):
         return False
     if operation == "acquire":
-        return not payload
+        return _acquire_request(payload)
     if operation == "stop":
         return set(payload) == {"session_id"} and _session_id(payload["session_id"])
     if operation in ("action_start", "action_release"):

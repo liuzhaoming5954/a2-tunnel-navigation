@@ -15,4 +15,6 @@ UMask=0077
 Restart=on-failure
 RestartSec=3s
 
-# 现场显式开启遥控维护窗口，启动网关不启动发令进程。
+# 现场启用本单元后网关随 PC2 启动。发令程序仍由受管入口启动。
+[Install]
+WantedBy=multi-user.target

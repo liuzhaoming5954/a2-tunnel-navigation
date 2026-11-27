@@ -1,4 +1,4 @@
-"""PC2 本地遥控许可，签发、撤销及读取均与驾驶舱的 HTTP 权限分开。"""
+"""PC2 可信本地许可，由管理员或受管的本地驾驶舱服务签发。"""
 
 from contextlib import contextmanager
 import fcntl
@@ -21,6 +21,7 @@ LATCH = Path('/var/lib/a2-remote-stop/latched')
 MAX_SECONDS = 30
 DIRECTIONS = {v.value for v in Direction}
 TRUSTED_UID = 0
+COCKPIT_ORIGIN = 'cockpit'
 
 
 def identity():
@@ -111,7 +112,8 @@ def _record(fd):
     data = json.loads(raw)
     if (not isinstance(data, dict) or data.get('version') != 1
             or type(data.get('serial')) is not int or data['serial'] < 1
-            or not isinstance(data.get('boot_id'), str) or not isinstance(data.get('receiver_id'), str)):
+            or not isinstance(data.get('boot_id'), str) or not isinstance(data.get('receiver_id'), str)
+            or ('origin' in data and data['origin'] != COCKPIT_ORIGIN)):
         raise ValueError('本地授权记录格式无效')
     return data
 
@@ -181,12 +183,15 @@ def grant_status(boot_id=None, receiver_id=None, *, now=None):
                 data = _record(fd)
         except FileNotFoundError:
             data = {}
-        serial = data.get('serial', 0)
+        state = {'serial': data.get('serial', 0)}
+        if data.get('origin') == COCKPIT_ORIGIN:
+            # 只暴露由本地受管服务创建的代号。SDK 层继续使用原有 grant 格式。
+            state['cockpit_managed'] = True
         ready, reason = _ready_epoch()
         if reason:
-            return {'serial': serial, 'grant': None, 'reason': reason}
+            return {**state, 'grant': None, 'reason': reason}
         grant, reason = _active(data, boot_id, receiver_id, ready, time.monotonic() if now is None else now)
-        return {'serial': serial, 'grant': grant, 'reason': reason}
+        return {**state, 'grant': grant, 'reason': reason}
     except (OSError, ValueError, KeyError, TypeError, OverflowError, RecursionError):
         return {'serial': None, 'grant': None, 'reason': 'local_grant_invalid'}
 
@@ -198,6 +203,17 @@ def _rejection(reason):
 def issue(expected_serial, seconds, directions, site_front_confirmed=False, *,
           repeated_actions=False, continuous_hold=False):
     """签一次本地许可，使用前一代序号进行比较交换，重复调用不能续期。"""
+    return _issue(expected_serial, seconds, directions, site_front_confirmed,
+                  repeated_actions=repeated_actions, continuous_hold=continuous_hold)
+
+
+def issue_cockpit(expected_serial):
+    """给受管本地服务签发一次四向持续按住许可。调用方负责核对停稳和会话状态。"""
+    return _issue(expected_serial, None, DIRECTIONS, False, continuous_hold=True, origin=COCKPIT_ORIGIN)
+
+
+def _issue(expected_serial, seconds, directions, site_front_confirmed, *,
+           repeated_actions=False, continuous_hold=False, origin=None):
     if os.geteuid() != TRUSTED_UID:
         return _rejection('local_admin_required')
     try:
@@ -255,17 +271,37 @@ def issue(expected_serial, seconds, directions, site_front_confirmed=False, *,
             grant['site_front_confirmed'] = True
         record = {'version': 1, 'boot_id': boot_id, 'receiver_id': receiver_id,
                   'serial': grant['serial'], 'guard_epoch': ready, 'owner_epoch': owner, 'grant': grant}
+        if origin is not None:
+            record['origin'] = origin
         _write(fd, record)
     return {'ok': True, 'grant': grant}
 
 
 def revoke():
     """撤销会增加代号，阻止撤销前排队的签发请求。无人授权时也保留此次撤销的代号。"""
+    return _revoke()
+
+
+def revoke_cockpit(expected_serial):
+    """回收已核实结束的驾驶舱许可。旧请求不能撤销另一张或管理员的许可。"""
+    if type(expected_serial) is not int or expected_serial < 1:
+        return _rejection('invalid_local_grant')
+    return _revoke(expected_serial)
+
+
+def _revoke(expected_serial=None):
     if os.geteuid() != TRUSTED_UID:
         return _rejection('local_admin_required')
     boot_id, receiver_id = identity()
     with _directory(create=True) as fd:
-        serial = _record(fd).get('serial', 0) + 1
+        previous = _record(fd)
+        serial = previous.get('serial', 0)
+        if expected_serial is not None:
+            if serial != expected_serial:
+                return _rejection('local_grant_serial_changed')
+            if previous.get('origin') != COCKPIT_ORIGIN or previous.get('grant') is None:
+                return _rejection('local_grant_not_cockpit')
+        serial += 1
         _write(fd, {'version': 1, 'boot_id': boot_id, 'receiver_id': receiver_id,
                     'serial': serial, 'grant': None})
     return {'ok': True, 'serial': serial, 'grant': None}

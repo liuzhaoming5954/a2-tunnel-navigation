@@ -345,6 +345,31 @@ class HardwareTests(unittest.TestCase):
             self.posture_frame(step, mode=3, modify=above_manual_threshold)
         self.assertTrue(guard.still_since(began))
 
+    def test_opt_in_reports_fresh_settling_without_changing_stillness_confirmation(self):
+        reader = self.motion_reader()
+        for step in range(4):
+            self.posture_frame(step, mode=3, modify=self.walking)
+        self.assertEqual(reader.motion_feedback(include_settling=True)["value"], "moving")
+
+        for step in range(4, 8):
+            self.posture_frame(step, mode=3)
+        self.assertIsNone(reader.motion_feedback())
+        settling = reader.motion_feedback(include_settling=True)
+        self.assertEqual(settling["value"], "settling")
+        self.assertEqual(settling["observed_at"], self.t)
+        self.assertIsNone(reader.feedback())
+
+        for step in range(8, 18):
+            self.posture_frame(step, mode=3)
+        self.assertEqual(reader.motion_feedback(include_settling=True), reader.feedback())
+        self.assertEqual(reader.motion_feedback(include_settling=True)["value"], "stopped")
+        self.posture_frame(18, mode=3, modify=self.walking)
+        self.posture_frame(19, mode=3)
+        self.assertEqual(reader.motion_feedback(include_settling=True)["value"], "settling")
+        self.t += .21
+        self.assertIsNone(reader.motion_feedback(include_settling=True))
+        self.sport_cls.assert_not_called()
+
     def test_motion_feedback_requires_fresh_coherent_dual_streams(self):
         reader = self.motion_reader()
         for step in range(4):

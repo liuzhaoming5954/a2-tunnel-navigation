@@ -9,7 +9,7 @@ import pwd
 import stat
 import time
 
-from maintenance_arbiter import (Direction, Feedback, FrontLidar, Inputs, Limits, LocalGrant,
+from maintenance_arbiter import (Direction, Feedback, FrontLidar, HoldReleasedBeforeOutput, Inputs, Limits, LocalGrant,
                                  MaintenanceArbiter, OperatorHold, Owner, Sample, _finite, command_direction)
 from manual_authority import _distinct_fields, neutral_epoch, read_owner
 from manual_grant import grant_status
@@ -71,6 +71,29 @@ def guard_ready():
     except (OSError, ValueError, KeyError):
         return False
 
+
+def keyboard_sample(boot_id, receiver_id):
+    # 正式路径仅读取固定的 root 证据，浏览器和发令账号均无写权限。
+    # 证据必须绑定到当前 PC2 开机和实际底盘，不能复用旧进程的跨开机记录。
+    try:
+        report = json.loads(trusted_file(KEYBOARD_HOLD), object_pairs_hook=_distinct_fields)
+        fields = {'schema_version', 'boot_id', 'receiver_id', 'pressed', 'epoch', 'direction',
+                  'observed_mono_ns'}
+        if (not isinstance(report, dict) or report.keys() != fields or type(report['schema_version']) is not int
+                or report['schema_version'] != 1 or report['boot_id'] != boot_id
+                or report['receiver_id'] != receiver_id or type(report['pressed']) is not bool):
+            return None
+        stamp, epoch, direction = report['observed_mono_ns'], report['epoch'], report['direction']
+        if (type(stamp) is not int or not 0 <= stamp < 2**63 or not isinstance(epoch, str)
+                or not 0 < len(epoch) <= 64 or report['pressed'] != (direction is not None)):
+            return None
+        observed_at = stamp / 1e9
+        if not 0 <= time.monotonic() - observed_at < LIMITS.max_sample_age_s:
+            return None
+        return Sample(OperatorHold(report['pressed'], epoch, None if direction is None else Direction(direction)),
+                      observed_at)
+    except (OSError, ValueError, TypeError, RecursionError):
+        return None
 
 def _front_lidar_sample(report):
     """只保留前雷达实时诊断，沿用安全输入的 PC2 单调时间上限。"""
@@ -141,27 +164,7 @@ class UnitreeBody:
         return None if guard_ready() else 'stop_guard_not_ready'
 
     def _keyboard_sample(self):
-        # 正式路径仅读取固定的 root 证据，浏览器和发令账号均无写权限。
-        # 证据必须绑定到当前 PC2 开机和实际底盘，不能复用旧进程的跨开机记录。
-        try:
-            report = json.loads(trusted_file(KEYBOARD_HOLD), object_pairs_hook=_distinct_fields)
-            fields = {'schema_version', 'boot_id', 'receiver_id', 'pressed', 'epoch', 'direction',
-                      'observed_mono_ns'}
-            if (not isinstance(report, dict) or report.keys() != fields or type(report['schema_version']) is not int
-                    or report['schema_version'] != 1 or report['boot_id'] != self.boot_id
-                    or report['receiver_id'] != self.receiver_id or type(report['pressed']) is not bool):
-                return None
-            stamp, epoch, direction = report['observed_mono_ns'], report['epoch'], report['direction']
-            if (type(stamp) is not int or not 0 <= stamp < 2**63 or not isinstance(epoch, str)
-                    or not 0 < len(epoch) <= 64 or report['pressed'] != (direction is not None)):
-                return None
-            observed_at = stamp / 1e9
-            if not 0 <= time.monotonic() - observed_at < LIMITS.max_sample_age_s:
-                return None
-            return Sample(OperatorHold(report['pressed'], epoch, None if direction is None else Direction(direction)),
-                          observed_at)
-        except (OSError, ValueError, TypeError, RecursionError):
-            return None
+        return keyboard_sample(self.boot_id, self.receiver_id)
 
     def _local_grant(self):
         # 许可每次从 PC2 独立签发记录重新核对，旧合并快照中的 grant 无权放行。
@@ -174,15 +177,21 @@ class UnitreeBody:
                           repeated_actions=grant.get('repeated_actions', False),
                           continuous_hold=grant.get('continuous_hold', False))
 
-    def _site_feedback(self):
+    def _site_feedback(self, *, include_settling=False):
         observer = getattr(self, '_site_observer', None)
-        sample = None if observer is None else observer.motion_feedback()
+        if observer is None:
+            return None
+        sample = (observer.motion_feedback(include_settling=True) if include_settling
+                  else observer.motion_feedback())
         if sample is None:
             return None
         stamp = sample['observed_at']
         if not _finite(stamp) or not 0 <= time.monotonic() - stamp <= LIMITS.max_sample_age_s:
             return None
-        return Sample(Feedback(sample['value']), stamp)
+        value = Feedback(sample['value'])
+        if value is Feedback.SETTLING and not include_settling:
+            return None
+        return Sample(value, stamp)
 
     def _site_guard(self, serial, guard):
         # 如果本轮见过独立监护，掉线时保留未知方向，直至该轮结束。
@@ -235,7 +244,9 @@ class UnitreeBody:
         if self.operator_supervised:
             # 持续提供机身反馈，供起步前和撤权后确认停稳。场地净空由现场操作员负责。
             hold = self._keyboard_sample() if self.keyboard_hold else None
-            return Inputs(owner=sample, feedback=self._site_feedback(), grant=grant, operator_hold=hold)
+            feedback = self._site_feedback(
+                include_settling=self.allow_continuous_hold and grant is not None and grant.continuous_hold)
+            return Inputs(owner=sample, feedback=feedback, grant=grant, operator_hold=hold)
         try:
             inputs = self._available_field_inputs()
         except (OSError, ValueError, TypeError, KeyError, OverflowError, RecursionError):
@@ -291,7 +302,12 @@ class UnitreeBody:
         if self.operator_supervised:
             # 净空由人负责。SDK 输出前仍复核签发方向和机身反馈的有效性。
             direction = command_direction(request.linear_mps, request.angular_radps)
-            if direction is None or direction.value not in grant['directions'] or self._site_feedback() is None:
+            if direction is None or direction.value not in grant['directions']:
+                return False
+            reusable = continuous_hold and request.reusable_hold
+            feedback = self._site_feedback(include_settling=reusable)
+            # 连续换向每段首帧必须再核对停稳。已起步时，仍必须有双路新鲜反馈。
+            if feedback is None or (reusable and request.require_standstill and feedback.value is not Feedback.STOPPED):
                 return False
         elif site_grant and not self._site_output_allowed(request, grant):
             return False
@@ -324,6 +340,10 @@ class UnitreeBody:
                         reason = 'deadline_expired'
                     self.parking_trace.record('hold_gate_rejected', reason=reason,
                                               linear_mps=request.linear_mps, angular_radps=request.angular_radps)
+                if (request.reusable_hold and hold is not None and not hold.value.pressed
+                        and hold.value.epoch != request.hold_epoch and time.monotonic() < deadline):
+                    # SDK 尚未调用。由仲裁器重新核对本次正常松键，其他输出错误仍撤销会话。
+                    raise HoldReleasedBeforeOutput
                 return False
         trace = self.parking_trace
         if trace is not None:
@@ -441,6 +461,10 @@ class MockBody:
         if self.continuous_hold:
             hold = self._hold_sample()
             now = self.clock()
+            if (request.reusable_hold and hold is not None and not hold.value.pressed
+                    and hold.value.epoch != request.hold_epoch
+                    and 0 <= now - hold.observed_at < LIMITS.max_sample_age_s and now < request.expires_at):
+                raise HoldReleasedBeforeOutput
             if (hold is None or not 0 <= now - hold.observed_at < LIMITS.max_sample_age_s
                     or not hold.value.pressed or hold.value.epoch != request.hold_epoch
                     or hold.value.direction is not command_direction(request.linear_mps, request.angular_radps)
@@ -452,7 +476,8 @@ class MockBody:
 
     def stop(self, session_id, reason):
         self.linear = self.angular = 0.
-        self.grant = None
+        if reason not in ('action_release', 'action_hold_released'):
+            self.grant = None
         self._event('stop', self.blocked_reason() or reason)
         return True
 
@@ -529,6 +554,7 @@ class ManualReceiver:
                 # 读取状态与复核守护之间若出现锁存，阻断回执不能继续携带动作信息。
                 control.pop('action_state', None)
                 control.pop('action_id', None)
+                control.pop('reusable_hold', None)
             return {'ok': True, 'control': {**control, 'source': self.body.source}}
         if op not in ('acquire', 'velocity', 'stop', 'action_start', 'action_release'):
             return {'ok': False, 'reason': 'invalid_request'}

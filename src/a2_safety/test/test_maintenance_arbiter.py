@@ -1,9 +1,11 @@
 from dataclasses import replace
 from threading import Event
 import unittest
+from unittest.mock import patch
 
 from maintenance_arbiter import (
-    Direction, Feedback, Inputs, Limits, LocalGrant, MaintenanceArbiter, OperatorHold, Owner, Sample,
+    Direction, Feedback, HoldReleasedBeforeOutput, Inputs, Limits, LocalGrant, MaintenanceArbiter,
+    OperatorHold, Owner, Sample,
 )
 
 
@@ -48,6 +50,213 @@ class OperatorHoldArbiterTest(unittest.TestCase):
         arbiter.tick()
         self.assertEqual(output.stops, [(session, 'operator_hold_changed')])
         self.assertEqual(output.commands, [])
+
+
+class ReusableHoldArbiterTest(unittest.TestCase):
+    def setUp(self):
+        self.now = 100.
+        self.output = MockOutput()
+        self.inputs = Inputs()
+        self.arbiter = MaintenanceArbiter(Limits(.20, .15, 30., .40, .20, .02),
+                                          lambda: self.inputs, self.output, clock=lambda: self.now,
+                                          idle_deadman=True, operator_supervised=True,
+                                          require_hold_direction=True, allow_continuous_hold=True)
+        self.addCleanup(self.arbiter.close)
+        self.refresh(.125, epoch="initial-neutral")
+        self.inputs = replace(self.inputs, grant=LocalGrant(
+            1, self.now, None, frozenset(Direction), continuous_hold=True))
+        self.assertIs(self.arbiter.state()["reusable_hold"], True)
+        status, reply = self.arbiter.acquire({"reusable_hold": True})
+        self.assertEqual(status, 200, reply)
+        self.session = reply["session_id"]
+        self.assertEqual(reply, {"ok": True, "session_id": self.session,
+                                 "continuous_hold": True, "reusable_hold": True})
+
+    def refresh(self, elapsed, *, epoch, direction=None, feedback=Feedback.STOPPED, owner=Owner.NEUTRAL):
+        self.now += elapsed
+        sample = OperatorHold(direction is not None, epoch, direction)
+        self.inputs = replace(self.inputs, owner=Sample(owner, self.now),
+                              feedback=Sample(feedback, self.now), operator_hold=Sample(sample, self.now))
+
+    def start(self, sequence, direction=Direction.FORWARD):
+        return self.arbiter.action_start({"session_id": self.session, "sequence": sequence,
+                                          "direction": direction.value})
+
+    def release(self, sequence, action_id):
+        return self.arbiter.action_release({"session_id": self.session, "sequence": sequence,
+                                            "action_id": action_id})
+
+    def send(self, sequence, linear=0., angular=0., *, action_id=None):
+        payload = {"session_id": self.session, "sequence": sequence, "linear_mps": linear, "angular_radps": angular}
+        if action_id is not None:
+            payload["action_id"] = action_id
+        return self.arbiter.velocity(payload)
+
+    def move_forward(self):
+        self.refresh(.0625, epoch="first-press", direction=Direction.FORWARD)
+        self.assertEqual(self.start(1), (200, {"ok": True, "action_id": 1}))
+        self.assertEqual(self.send(2, .20, action_id=1)[0], 200)
+
+    def test_independent_release_stops_then_allows_each_new_direction(self):
+        self.assertEqual(self.arbiter.state()["action_state"], "ready")
+        self.assertEqual(self.start(1)[1]["reason"], "operator_hold_released")
+        self.move_forward()
+        self.refresh(.0625, epoch="second-neutral", feedback=Feedback.MOVING)
+        # 没有网页释放时，机载独立键盘已停车，旧速度包不能续期。
+        self.assertEqual(self.send(3, .20, action_id=1)[1]["reason"], "action_expired")
+        self.assertEqual(self.output.stops, [(self.session, "action_hold_released")])
+        self.assertEqual(self.release(3, 1)[0], 200)
+        self.assertEqual(self.send(4)[0], 200)
+        self.assertEqual(self.start(5, Direction.LEFT)[1]["reason"], "action_stopping")
+        self.refresh(.0625, epoch="second-neutral")
+        self.assertEqual(self.arbiter.state()["action_state"], "ready")
+        self.assertEqual(self.start(5, Direction.LEFT)[1]["reason"], "operator_hold_released")
+
+        self.refresh(.0625, epoch="second-press", direction=Direction.LEFT)
+        self.assertEqual(self.start(5, Direction.LEFT), (200, {"ok": True, "action_id": 5}))
+        self.assertEqual(self.send(6, angular=.15, action_id=5)[0], 200)
+        self.assertEqual([(c.session_id, c.linear_mps, c.angular_radps) for c in self.output.commands],
+                         [(self.session, .20, 0.), (self.session, 0., .15)])
+
+    def test_idle_waits_for_standstill_without_revoking_and_rejects_motion(self):
+        self.refresh(.0625, epoch="initial-neutral", feedback=Feedback.MOVING)
+        self.assertEqual(self.arbiter.state()["action_state"], "standstill_pending")
+        self.assertTrue(self.arbiter.state()["armed"])
+        self.assertEqual(self.send(1)[0], 200)
+
+        self.refresh(.0625, epoch="before-standstill", direction=Direction.FORWARD,
+                     feedback=Feedback.SETTLING)
+        self.assertEqual(self.start(2)[1]["reason"], "standstill_required")
+        self.assertEqual(self.output.commands, [])
+
+        self.refresh(.0625, epoch="released")
+        self.assertEqual(self.arbiter.state()["action_state"], "ready")
+        self.refresh(.0625, epoch="new-press", direction=Direction.FORWARD)
+        self.assertEqual(self.start(3)[0], 200)
+        self.assertEqual(self.send(4, .20, action_id=3)[0], 200)
+        self.assertTrue(self.output.commands[-1].require_standstill)
+        self.assertEqual(self.send(5, .20, action_id=3)[0], 200)
+        self.assertFalse(self.output.commands[-1].require_standstill)
+
+    def test_fresh_settling_keeps_stopped_action_pending_but_lost_feedback_revokes(self):
+        self.move_forward()
+        self.refresh(.0625, epoch="second-neutral", feedback=Feedback.MOVING)
+        self.assertEqual(self.release(3, 1)[0], 200)
+        self.refresh(.0625, epoch="second-neutral", feedback=Feedback.SETTLING)
+        self.assertEqual(self.send(4)[0], 200)
+        self.assertEqual(self.arbiter.state()["action_state"], "stopping")
+        self.assertEqual(self.start(5)[1]["reason"], "action_stopping")
+
+        self.inputs = replace(self.inputs, feedback=None)
+        state = self.arbiter.state()
+        self.assertFalse(state["armed"])
+        self.assertEqual(state["reason"], "feedback_stale")
+        self.assertEqual(len(self.output.commands), 1)
+
+    def test_browser_release_first_requires_observed_neutral_and_fences_old_action(self):
+        self.move_forward()
+        self.refresh(.0625, epoch="first-press", direction=Direction.FORWARD)
+        self.assertEqual(self.release(3, 1)[0], 200)
+        # 停车请求之前的停稳样本不能放行，之后仍要观察到实体键回中。
+        self.assertEqual(self.arbiter.state()["action_state"], "stopping")
+        self.refresh(.0625, epoch="first-press", direction=Direction.FORWARD)
+        self.assertEqual(self.start(4)[1]["reason"], "action_release_required")
+        self.assertEqual(self.send(4, .20, action_id=1)[1]["reason"], "action_expired")
+        self.refresh(.0625, epoch="second-neutral")
+        self.assertEqual(self.arbiter.state()["action_state"], "ready")
+
+        # 即使重新按同一个方向，旧动作编号也不能下发速度。
+        self.refresh(.0625, epoch="second-press", direction=Direction.FORWARD)
+        self.assertEqual(self.start(4)[0], 200)
+        self.assertEqual(self.send(5, .20, action_id=1)[1]["reason"], "invalid_action")
+        self.assertEqual(self.send(5, .20, action_id=4)[0], 200)
+        self.assertEqual(self.output.stops, [(self.session, "action_release")])
+        self.assertEqual([command.hold_epoch for command in self.output.commands], ["first-press", "second-press"])
+
+    def test_missing_browser_release_cannot_keep_session_alive(self):
+        self.move_forward()
+        self.refresh(.0625, epoch="second-neutral", feedback=Feedback.MOVING)
+        self.assertEqual(self.send(3, .20, action_id=1)[1]["reason"], "action_expired")
+        self.refresh(.0625, epoch="second-neutral")
+        self.assertEqual(self.arbiter.state()["action_state"], "release_required")
+        self.assertEqual(self.send(4)[1]["reason"], "action_release_required")
+        self.refresh(.3125, epoch="second-neutral")
+        self.assertEqual(self.arbiter.state()["reason"], "deadman_expired")
+        self.refresh(.0625, epoch="second-press", direction=Direction.FORWARD)
+        self.assertEqual(self.start(5)[1]["reason"], "invalid_session")
+        self.assertEqual(self.send(6, .20, action_id=1)[1]["reason"], "invalid_session")
+        self.assertEqual(len(self.output.commands), 1)
+
+    def test_release_in_output_recheck_stops_without_revoking_when_confirmed(self):
+        self.move_forward()
+
+        def release_before_sdk(request):
+            self.refresh(.0625, epoch="second-neutral", feedback=Feedback.MOVING)
+            raise HoldReleasedBeforeOutput
+
+        # 键盘恰好在仲裁通过和底盘输出复核之间松开，确认不发送这一包也不误撤权。
+        with patch.object(self.output, "velocity", side_effect=release_before_sdk):
+            self.assertEqual(self.send(3, .20, action_id=1)[1]["reason"], "action_expired")
+        self.assertEqual(len(self.output.commands), 1)
+        self.assertEqual(self.output.stops, [(self.session, "action_hold_released")])
+        self.assertEqual(self.release(4, 1)[0], 200)
+        self.refresh(.0625, epoch="second-neutral")
+        self.assertEqual(self.arbiter.state()["action_state"], "ready")
+
+    def test_failed_stop_output_blocks_next_action_until_stop_is_accepted(self):
+        self.move_forward()
+        self.refresh(.0625, epoch="second-neutral", feedback=Feedback.MOVING)
+        with patch.object(self.output, "stop", return_value=False):
+            self.assertEqual(self.release(3, 1)[0], 200)
+            self.refresh(.0625, epoch="second-neutral")
+            self.assertEqual(self.arbiter.state()["action_state"], "stopping")
+        # 停车回执重试成功后，消化新一帧停稳反馈，再开放下一次按键。
+        self.refresh(.0625, epoch="second-neutral")
+        self.arbiter.tick()
+        self.refresh(.0625, epoch="second-neutral")
+        self.assertEqual(self.arbiter.state()["action_state"], "ready")
+        self.assertEqual(len(self.output.stops), 1)
+
+    def test_explicit_close_consumes_the_session_even_at_rest(self):
+        self.assertEqual(self.send(1)[0], 200)
+        self.assertEqual(self.arbiter.stop({"session_id": self.session})[0], 200)
+        self.refresh(.0625, epoch="initial-neutral")
+        self.assertFalse(self.arbiter.state()["armed"])
+        self.assertEqual(self.output.stops, [(self.session, "operator_stop")])
+        self.assertEqual(self.arbiter.acquire({"reusable_hold": True})[1]["reason"], "local_authorization_required")
+        self.assertEqual(self.start(2)[1]["reason"], "invalid_session")
+        self.assertEqual(self.output.commands, [])
+
+    def test_keyboard_evidence_expiry_stops_despite_browser_sending(self):
+        self.move_forward()
+        first_hold = self.inputs.operator_hold
+        self.refresh(.125, epoch="first-press", direction=Direction.FORWARD, feedback=Feedback.MOVING)
+        self.inputs = replace(self.inputs, operator_hold=first_hold)
+        self.assertEqual(self.send(3, .20, action_id=1)[0], 200)
+        self.refresh(.125, epoch="first-press", direction=Direction.FORWARD, feedback=Feedback.MOVING)
+        self.inputs = replace(self.inputs, operator_hold=first_hold)
+        self.assertEqual(self.send(4, .20, action_id=1)[1]["reason"], "invalid_session")
+        self.assertEqual(self.output.stops, [(self.session, "operator_hold_stale")])
+
+    def test_new_physical_epoch_without_confirmed_release_revokes(self):
+        self.move_forward()
+        self.refresh(.0625, epoch="second-press", direction=Direction.BACKWARD, feedback=Feedback.MOVING)
+        self.assertEqual(self.send(3, .20, action_id=1)[1]["reason"], "invalid_session")
+        self.assertEqual(self.output.stops, [(self.session, "operator_hold_changed")])
+
+    def test_held_action_has_no_30_second_cap_but_browser_deadman_still_applies(self):
+        self.move_forward()
+        started_at = self.now
+        for sequence in range(3, 253):
+            self.refresh(.125, epoch="first-press", direction=Direction.FORWARD, feedback=Feedback.MOVING)
+            self.assertEqual(self.send(sequence, .20, action_id=1)[0], 200)
+        self.assertGreater(self.now - started_at, 30.)
+        self.assertEqual(self.arbiter.state()["action_state"], "active")
+        self.assertEqual(self.output.stops, [])
+
+        self.refresh(.4375, epoch="first-press", direction=Direction.FORWARD, feedback=Feedback.MOVING)
+        self.assertEqual(self.send(253, .20, action_id=1)[1]["reason"], "invalid_session")
+        self.assertEqual(self.output.stops, [(self.session, "deadman_expired")])
 
 
 class MaintenanceArbiterTest(unittest.TestCase):

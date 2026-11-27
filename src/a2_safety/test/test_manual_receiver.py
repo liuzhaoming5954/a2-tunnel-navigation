@@ -685,6 +685,37 @@ class UnitreeContractTest(unittest.TestCase):
             self.assertFalse(self.body.velocity(request))
             self.body.sport.Move.assert_called_once_with(.20, 0., 0.)
 
+    def test_settling_tracks_live_feedback_but_cannot_admit_the_first_move(self):
+        now = 100.
+        self.body.operator_supervised = self.body.keyboard_hold = self.body.allow_continuous_hold = True
+        self.body._site_observer = MagicMock()
+        observer = self.body._site_observer.motion_feedback
+        observer.return_value = {'value': 'settling', 'observed_at': now}
+        self.data['owner']['observed_at'] = now
+        self.data['grant'].update(issued_at=now, expires_at=None, continuous_hold=True)
+        self.body.sport.Move.return_value = 0
+        hold = Sample(OperatorHold(True, 'press-1', Direction.FORWARD), now)
+        start = VelocityRequest('session', 2, 1, now, now + .15, .20, 0.,
+                                hold_epoch='press-1', reusable_hold=True, require_standstill=True)
+        with (
+            patch.object(manual, 'guard_ready', return_value=True),
+            patch.object(manual.time, 'monotonic', return_value=now),
+            patch.object(self.body, '_keyboard_sample', return_value=hold),
+        ):
+            self.assertEqual(self.body.observe().feedback, Sample(Feedback.SETTLING, now))
+            observer.assert_called_with(include_settling=True)
+            self.assertFalse(self.body.velocity(start))
+            self.assertFalse(self.body.velocity(replace(start, reusable_hold=False, require_standstill=False)))
+            self.body.sport.Move.assert_not_called()
+            observer.return_value = {'value': 'stopped', 'observed_at': now}
+            self.assertTrue(self.body.velocity(start))
+            observer.return_value = {'value': 'settling', 'observed_at': now}
+            continuation = replace(start, sequence=3, require_standstill=False)
+            self.assertTrue(self.body.velocity(continuation))
+            observer.return_value['observed_at'] = now - .21
+            self.assertFalse(self.body.velocity(replace(continuation, sequence=4)))
+            self.assertEqual(self.body.sport.Move.call_count, 2)
+
     def test_site_stop_continues_to_read_body_feedback_after_grant_expiry(self):
         now = [100.]
         deadline = 105.05

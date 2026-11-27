@@ -1,0 +1,16 @@
+[Unit]
+Description=A2 驾驶舱控制回环连接
+# PC2 可以晚于上位机上线。链路恢复后保留相同的本地回环入口。
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+UMask=0077
+NoNewPrivileges=yes
+# 控制查询使用自己的 TCP 连接，独立键盘由另一个用户单元转发。
+ExecStart=/usr/bin/ssh -F %h/.config/a2-cockpit/ssh_config -N -T -o ControlMaster=no -o ControlPath=none -o ClearAllForwardings=no -o ExitOnForwardFailure=yes -L 127.0.0.1:18777:127.0.0.1:18777 a2-cockpit-pc2-control
+Restart=always
+RestartSec=3s
+
+[Install]
+WantedBy=default.target

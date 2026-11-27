@@ -19,6 +19,7 @@ from .platform_details import fresh_details
 _MAX_RESPONSE_BYTES = 65_536
 _TIMEOUT_SECONDS = 0.8
 _STOP_RESET_TIMEOUT_SECONDS = 24.0
+_MANUAL_ARM_TIMEOUT_SECONDS = 10.0
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _GOAL_PATH = "/api/navigation/goal"
 _GOAL_PHASES = {"idle", "sending", "active", "canceling", "succeeded", "canceled", "failed", "uncertain"}
@@ -146,7 +147,11 @@ class StationSource:
         if payload is not None:
             body = json.dumps(payload, allow_nan=False, separators=(",", ":")).encode("utf-8")
             headers["Content-Type"] = "application/json"
-        timeout = _STOP_RESET_TIMEOUT_SECONDS if path == PC2_STOP_RESET_PATH else _TIMEOUT_SECONDS
+        timeout = _TIMEOUT_SECONDS
+        if path == PC2_STOP_RESET_PATH:
+            timeout = _STOP_RESET_TIMEOUT_SECONDS
+        elif method == "POST" and manual_link.PC2_COMMANDS.get(path) == "acquire":
+            timeout = _MANUAL_ARM_TIMEOUT_SECONDS
         connection = HTTPConnection(*endpoint, timeout=timeout)
         try:
             connection.request(method, path, body=body, headers=headers)
@@ -239,7 +244,7 @@ class StationSource:
             # 停车独立于遥测；即使状态读取失败，旧会话仍可以请求停车。
             _, state = self.state()
             control = state["control"]
-            if not control["available"]:
+            if not control["available"] and not (operation == "acquire" and control.get("activation_available")):
                 reason = state["pc2_reason"] or control["reason"]
                 code = {"pc2_unavailable": 503, "manual_link_offline": 503, "pc2_invalid_response": 502,
                         "manual_invalid_response": 502, "manual_auth_failed": 403}.get(reason, 409)
@@ -326,7 +331,8 @@ class StationSource:
             return manual_link.unavailable("robot_offline", control["source"])
         # PC2 发布者给速度反馈设置了有效期。经过 SSH 和第二次读状态后，
         # 即便机器人在线标志仍为真，已过期的运动反馈也不能用来发放控制。
-        if control["available"] and (robot["velocity"] is None or peer["velocity"] is None):
+        if (control["available"] or control.get("activation_available")) and (
+                robot["velocity"] is None or peer["velocity"] is None):
             return manual_link.unavailable("feedback_stale", control["source"])
         return control
 
@@ -404,6 +410,9 @@ class StationSource:
                     stop_reset = self._paired_stop_reset(control_report, control_age_ms, robot, remote_stop)
             elif message is not None and self._manual_key is not None:
                 control = manual_link.control_state(message.get("control"))
+                # 单击启用必须由正式站端检查两路同机身且新鲜的状态。
+                if control.pop("activation_available", None):
+                    control.pop("reusable_hold", None)
                 if control["source"] == "mock":
                     # 演练使用模拟接收器的锁存；不将测试机上的服务状态冒充机器人遥测。
                     remote_stop = None

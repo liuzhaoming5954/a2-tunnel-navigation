@@ -1,0 +1,19 @@
+# 仅适用于 PC2 的专用控制转发账号。按本机 sshd 的配置布局登记并核对有效规则。
+Match User a2-cockpit-control
+    AuthenticationMethods publickey
+    PubkeyAuthentication yes
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    AllowAgentForwarding no
+    AllowStreamLocalForwarding no
+    AllowTcpForwarding local
+    PermitOpen 127.0.0.1:18777 127.0.0.1:18778
+    PermitListen none
+    GatewayPorts no
+    PermitTTY no
+    PermitTunnel no
+    PermitUserRC no
+    X11Forwarding no
+    # 转发不需要 SSH 会话。零值拒绝命令、PTY 和子系统。
+    MaxSessions 0
+Match all

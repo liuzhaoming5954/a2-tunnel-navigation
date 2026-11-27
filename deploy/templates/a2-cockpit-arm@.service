@@ -1,0 +1,18 @@
+[Unit]
+Description=A2 驾驶舱单次启用请求
+
+[Service]
+# 仅接受本机 socket；程序通过内核凭据与服务控制组复核调用方。
+Type=exec
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+ExecStart=/usr/bin/python3 -I -sB /usr/local/libexec/a2-cockpit-arm serve
+RuntimeDirectory=a2-stop-reset
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+RuntimeMaxSec=8s
+TimeoutStopSec=1s
+PrivateTmp=yes
+NoNewPrivileges=yes
+UMask=0077

@@ -4,12 +4,22 @@ Host a2-cockpit-pc3
     HostName 192.0.2.4
     User unitree
     IdentityFile ~/.config/a2-cockpit/pc3_ed25519
+    # 每个 ProxyCommand 建立自己的外层 TCP，隔离控制查询和键盘应答。
+    ControlMaster no
+    ControlPath none
 
 Host a2-cockpit-pc2
     HostName 192.0.2.2
     User unitree
     IdentityFile ~/.config/a2-cockpit/pc2_ed25519
     # PC3 服务端强制运行到 PC2 SSH 端口的固定中继，本处只提供其标准输入和输出。
+    ProxyCommand /usr/bin/ssh -F ~/.config/a2-cockpit/ssh_config -T a2-cockpit-pc3
+
+Host a2-cockpit-pc2-control
+    HostName 192.0.2.2
+    User a2-cockpit-control
+    # 控制通道单独登记身份。端口白名单由 PC2 的 sshd 账号规则限制。
+    IdentityFile ~/.config/a2-cockpit/pc2_control_ed25519
     ProxyCommand /usr/bin/ssh -F ~/.config/a2-cockpit/ssh_config -T a2-cockpit-pc3
 
 Host *

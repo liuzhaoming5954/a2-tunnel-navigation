@@ -9,8 +9,8 @@ import { DIRECTIONS, describeError, formatImuYawRate } from './useGateway.js'
 const props = defineProps({ gateway: { type: Object, required: true } })
 const {
   state, map, connection, mapStatus, phase, activeDirection, events, fault,
-  remoteStop, remoteStopBlock, limits, available, canArm, canStop, canDrive, controlExpiresAt,
-  hasControlSession, repeatedActions, continuousHold, actionExpiresAt,
+  remoteStop, remoteStopBlock, limits, available, activationAvailable, canArm, canStop, canDrive, controlExpiresAt,
+  hasControlSession, repeatedActions, continuousHold, reusableHold, actionExpiresAt,
   arm, stop, beginDirection, endDirection, clearEvents,
 } = props.gateway
 
@@ -25,6 +25,7 @@ const phaseLabels = {
   idle: '待启用',
   arming: '启用中',
   ready: '已启用',
+  standstill_pending: '已启用，等待停稳',
   action_starting: '动作确认中',
   moving: '指令发送中',
   action_stopping: '等待停稳',
@@ -111,9 +112,11 @@ const unavailableLabel = computed(() => {
 })
 const controlStatus = computed(() => {
   if (canStop.value) return phaseLabels[phase.value]
-  if (!available.value) return '控制不可用'
+  if (!available.value && !activationAvailable.value) return '控制不可用'
   return state.value.control.armed ? '遥控会话已占用' : phaseLabels[phase.value]
 })
+const offersReusableHold = computed(() => hasControlSession.value
+  ? reusableHold.value : state.value?.control?.reusable_hold === true)
 const controlRemaining = ref(0)
 const displayDeadline = computed(() => actionExpiresAt.value ?? controlExpiresAt.value)
 watch(displayDeadline, (expiresAt, _previous, onCleanup) => {
@@ -228,7 +231,7 @@ onBeforeUnmount(() => {
           <button type="button" class="arm-button" :class="{ 'session-active': hasControlSession }"
             :disabled="!canArm" aria-describedby="manual-control-note" @click="arm">
             <Icon name="power" :size="17" />
-            {{ hasControlSession ? '控制已启用' : phase === 'arming' ? '启用中' : '启用控制' }}
+            {{ phase === 'arming' ? '启用中' : hasControlSession ? '控制已启用' : '启用控制' }}
           </button>
           <p v-if="displayDeadline !== null" class="control-remaining">{{ repeatedActions ? '本段剩余' : '会话剩余' }} <strong>{{ controlRemaining.toFixed(1) }}</strong> 秒</p>
           <div class="control-divider"></div>
@@ -249,14 +252,18 @@ onBeforeUnmount(() => {
             </button>
           </div>
           <button type="button" class="stop-button" :disabled="!canStop" @click="stop('操作员触发停止')">
-            <Icon name="stop" :size="18" /><span>停止遥控</span><kbd>Space</kbd>
+            <Icon name="stop" :size="18" /><span>{{ offersReusableHold ? '关闭控制' : '停止遥控' }}</span><kbd>Space</kbd>
           </button>
 
           <p v-if="remoteStopBlock" id="manual-control-note" class="control-note" :class="{ warning: remoteStopBlock === 'stop_latched' }" role="status"><Icon name="shield" :size="15" />{{ unavailableLabel }}</p>
           <p v-else-if="fault" id="manual-control-note" class="control-note warning" role="alert"><Icon name="info" :size="15" />{{ fault }}</p>
+          <p v-else-if="activationAvailable" id="manual-control-note" class="control-note">
+            <Icon name="shield" :size="15" />保持手柄和实体方向键回中，点击「启用控制」。
+          </p>
           <p v-else-if="!available" id="manual-control-note" class="control-note"><Icon name="info" :size="15" />{{ unavailableLabel }}</p>
           <p v-else id="manual-control-note" class="control-note"><Icon name="shield" :size="15" /><span>
-            <template v-if="continuousHold">按住实体方向键或 WASD 行进，松键结束控制。</template>
+            <template v-if="offersReusableHold">按住实体方向键或 WASD 行进，松键停车，停稳后可再次按键。</template>
+            <template v-else-if="continuousHold">按住实体方向键或 WASD 行进，松键结束控制。</template>
             <template v-else>按住方向键或 WASD 行进。{{ repeatedActions ? '松键即停，停稳后可再次按键。' : '松开即结束遥控。' }}</template>
             <template v-if="state?.mode === 'manual_control'">键盘 A 左转，原厂遥控器 A 键停车并锁存。</template>
           </span></p>

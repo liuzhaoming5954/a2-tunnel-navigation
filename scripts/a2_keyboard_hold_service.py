@@ -28,6 +28,78 @@ KEY_PATH = Path('/etc/a2/keyboard-hold.key')
 RUNTIME_DIRECTORY = Path('/run/a2-keyboard-hold')
 _PREFIX = b'a2-keyboard-hold/v1/'
 _PEER_ERRORS = (OSError, ValueError, RecursionError)
+_DIAGNOSTIC_INTERVAL_NS = 1_000_000_000
+
+
+class _AuthenticationError(ValueError):
+    """认证失败与帧格式错误分别计数，保留原有拒绝路径。"""
+
+
+class _PeerProgress:
+    """只保存本连接的计数和耗时，正常收发时不写日志。"""
+
+    def __init__(self, attempt=0, phase='startup'):
+        self.attempt = attempt
+        self.frames = 0
+        self.last_reply_rtt_ms = None
+        self.last_sample_ms = None
+        self.max_sample_ms = None
+        self.enter(phase)
+
+    def enter(self, phase, started_ns=None):
+        self.phase = phase
+        self.phase_ns = time.monotonic_ns() if started_ns is None else started_ns
+
+    def sampled(self):
+        elapsed = self._duration(self.phase_ns, time.monotonic_ns())
+        self.last_sample_ms = elapsed
+        self.max_sample_ms = elapsed if self.max_sample_ms is None else max(elapsed, self.max_sample_ms)
+
+    @staticmethod
+    def _duration(start_ns, end_ns):
+        return round((end_ns - start_ns) / 1e6, 3)
+
+    def record(self, now):
+        return {'attempt': self.attempt, 'phase': self.phase,
+                'phase_elapsed_ms': self._duration(self.phase_ns, now), 'frames': self.frames,
+                'last_reply_rtt_ms': self.last_reply_rtt_ms, 'last_sample_ms': self.last_sample_ms,
+                'max_sample_ms': self.max_sample_ms}
+
+
+class _Diagnostics:
+    """只输出有限类别和本机时间，连接异常时按同类事件限流。"""
+
+    def __init__(self, side):
+        self.side = side
+        self._last = {}
+
+    def emit(self, event, progress, error=None):
+        if error is None:
+            reason = 'eof' if event == 'peer_end' else 'ready'
+        elif isinstance(error, TimeoutError):
+            reason = 'timeout'
+        elif isinstance(error, _AuthenticationError):
+            reason = 'authentication_failed'
+        elif isinstance(error, OSError):
+            reason = 'io_error'
+        else:
+            reason = 'invalid_data'
+        now = time.monotonic_ns()
+        category = (event, progress.phase, reason)
+        last, suppressed = self._last.get(category, (-_DIAGNOSTIC_INTERVAL_NS, 0))
+        if now - last < _DIAGNOSTIC_INTERVAL_NS:
+            self._last[category] = last, suppressed + 1
+            return
+        self._last[category] = now, 0
+        row = {'side': self.side, 'event': event, 'reason': reason, 'mono_ns': now,
+               'wall_ns': time.time_ns(), 'suppressed': suppressed, **progress.record(now)}
+        if isinstance(error, OSError) and type(error.errno) is int:
+            row['errno'] = error.errno
+        try:
+            print('A2_KEYBOARD_DIAG ' + json.dumps(row, separators=(',', ':')), file=sys.stderr, flush=True)
+        except OSError:
+            # 日志端故障不能改变已撤销的证据或重连流程。
+            pass
 
 
 def _proof(key, role, session, fields):
@@ -47,7 +119,7 @@ def _validate_frame(frame, key, role, session, fields):
         raise ValueError('键盘信号认证帧格式无效')
     body = {name: frame[name] for name in fields}
     if not hmac.compare_digest(frame['proof'], _proof(key, role, session, body)):
-        raise ValueError('键盘信号认证失败')
+        raise _AuthenticationError('键盘信号认证失败')
     return body
 
 
@@ -55,13 +127,17 @@ def _send(peer, key, role, session, fields, deadline):
     _write_frame(peer.fileno(), {**fields, 'proof': _proof(key, role, session, fields)}, deadline)
 
 
-def receive_peer(peer, key, publish, clear):
+def receive_peer(peer, key, publish, clear, progress=None):
     """PC2 端处理一条连接，失败、超时或关闭立即撤下当前样本。"""
     fd = peer.fileno()
+    if progress is None:
+        progress = _PeerProgress()
     try:
+        progress.enter('hello_read')
         hello = _read_frame(fd, time.monotonic() + CHALLENGE_TIMEOUT_S)
         if hello is None:
             return
+        progress.enter('hello_verify')
         session = hello.get('session')
         if not _hex(session, 32):
             raise ValueError('键盘信号会话标识无效')
@@ -71,10 +147,14 @@ def receive_peer(peer, key, publish, clear):
             issued_ns = time.monotonic_ns()
             issued = issued_ns / 1e9
             deadline = issued + REPLY_TIMEOUT_S
+            progress.enter('challenge_write', issued_ns)
             _send(peer, key, b'challenge', session, {'nonce': nonce}, deadline)
+            progress.enter('reply_read')
             reply = _read_frame(fd, deadline)
             if reply is None:
                 return
+            received_ns = time.monotonic_ns()
+            progress.enter('reply_verify', received_ns)
             if reply.get('nonce') != nonce:
                 raise ValueError('键盘信号应答与当前挑战不匹配')
             fields = _validate_frame(reply, key, b'sample', session, {'nonce', 'pressed', 'epoch', 'direction'})
@@ -83,28 +163,40 @@ def receive_peer(peer, key, publish, clear):
             if time.monotonic() >= deadline:
                 raise TimeoutError('键盘信号应答过期')
             # 采样必在挑战之后。以 PC2 发出挑战的时间保守计龄，避免排队报文延长按住证据寿命。
+            progress.enter('snapshot_publish')
             publish({**sample, 'observed_mono_ns': issued_ns})
+            progress.frames += 1
+            progress.last_reply_rtt_ms = progress._duration(issued_ns, received_ns)
             time.sleep(max(0.0, issued + POLL_S - time.monotonic()))
     finally:
         clear()
 
 
-def serve_peer(peer, key, sample):
+def serve_peer(peer, key, sample, progress=None):
     """上位机端处理一条连接。验证本轮挑战后才同步采样实体设备。"""
     fd = peer.fileno()
+    if progress is None:
+        progress = _PeerProgress()
     session = secrets.token_hex(16)
+    progress.enter('hello_write')
     _send(peer, key, b'hello', session, {'session': session}, time.monotonic() + REPLY_TIMEOUT_S)
     while True:
+        progress.enter('challenge_read')
         challenge = _read_frame(fd, time.monotonic() + CHALLENGE_TIMEOUT_S)
         if challenge is None:
             return
         received = time.monotonic()
+        progress.enter('challenge_verify')
         fields = _validate_frame(challenge, key, b'challenge', session, {'nonce'})
         nonce = fields['nonce']
         if not _hex(nonce, 32):
             raise ValueError('键盘信号挑战标识无效')
-        _send(peer, key, b'sample', session, {**_checked_sample(sample()), 'nonce': nonce},
-              received + REPLY_TIMEOUT_S)
+        progress.enter('keyboard_sample')
+        evidence = _checked_sample(sample())
+        progress.sampled()
+        progress.enter('sample_write')
+        _send(peer, key, b'sample', session, {**evidence, 'nonce': nonce}, received + REPLY_TIMEOUT_S)
+        progress.frames += 1
 
 
 def _load_key(path):
@@ -184,7 +276,7 @@ def _configure_stream(peer):
     peer.setblocking(False)
 
 
-def _run_pc2(key):
+def _run_pc2(key, diagnostics):
     group_id = grp.getgrnam('a2-autonomy').gr_gid
     if os.getegid() != group_id:
         raise PermissionError('PC2 发布进程须使用 a2-autonomy 组')
@@ -195,15 +287,22 @@ def _run_pc2(key):
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             listener.bind(ADDRESS)
             listener.listen(1)
+            diagnostics.emit('ready', _PeerProgress(phase='listen'))
+            attempt = 0
             while True:
                 peer, _address = listener.accept()
+                attempt += 1
+                progress = _PeerProgress(attempt, 'stream_setup')
                 # 同一时刻只接收一路操作输入，不让新连接悄悄续上旧样本。
-                with peer:
-                    try:
+                try:
+                    with peer:
                         _configure_stream(peer)
-                        receive_peer(peer, key, publish, clear)
-                    except _PEER_ERRORS:
-                        clear()
+                        receive_peer(peer, key, publish, clear, progress)
+                except _PEER_ERRORS as error:
+                    clear()
+                    diagnostics.emit('peer_end', progress, error)
+                else:
+                    diagnostics.emit('peer_end', progress)
 
 
 def _physical_device(path):
@@ -219,16 +318,24 @@ def _physical_device(path):
     return node
 
 
-def _run_station(key, device):
+def _run_station(key, device, diagnostics):
+    diagnostics.emit('ready', _PeerProgress(phase='start'))
+    attempt = 0
     while True:
+        attempt += 1
+        progress = _PeerProgress(attempt, 'keyboard_open')
         try:
             with open_keyboard(_physical_device(device)) as keyboard:
+                progress.enter('tunnel_connect')
                 with socket.create_connection(ADDRESS, timeout=CHALLENGE_TIMEOUT_S) as peer:
+                    progress.enter('stream_setup')
                     _configure_stream(peer)
-                    serve_peer(peer, key, keyboard.sample)
-        except _PEER_ERRORS:
+                    serve_peer(peer, key, keyboard.sample, progress)
+        except _PEER_ERRORS as error:
             # 断线、设备拔出或采样异常都结束此轮，重连后由新观察器重新确认回中。
-            pass
+            diagnostics.emit('peer_end', progress, error)
+        else:
+            diagnostics.emit('peer_end', progress)
         time.sleep(.25)
 
 
@@ -244,18 +351,22 @@ def main():
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, shutdown)
+    diagnostics = _Diagnostics(args.command)
+    progress = _PeerProgress(phase='key_load')
     try:
         if os.geteuid() != 0:
             raise PermissionError('正式键盘通道须由 root 服务管理')
         key = _load_key(KEY_PATH)
         if args.command == 'pc2':
-            _run_pc2(key)
+            progress.enter('publisher')
+            _run_pc2(key, diagnostics)
         else:
-            _run_station(key, args.device)
+            progress.enter('station_run')
+            _run_station(key, args.device, diagnostics)
     except KeyboardInterrupt:
         return 0
     except (OSError, KeyError, ValueError) as error:
-        print(f'键盘证据服务退出：{error}', file=sys.stderr)
+        diagnostics.emit('fatal', progress, error)
         return 1
     return 0
 

@@ -8,6 +8,7 @@ const COCKPIT_READING_GRACE_MS = 200
 // PC2 的 IMU 差分转速比姿态角有效期更短。前端轮询停顿时也单独撤下转速。
 const MAX_IMU_YAW_RATE_AGE_MS = 250
 const VELOCITY_INTERVAL_MS = 100
+const MANUAL_ARM_TIMEOUT_MS = 11500
 // 只给首次起步补偿键盘采样时差。PC2 原有 400 毫秒指令看门狗继续独立判定。
 const KEYBOARD_START_RETRY_INTERVAL_MS = 35
 const KEYBOARD_START_RETRY_MS = 280
@@ -34,6 +35,13 @@ export const DIRECTIONS = {
 
 const ERROR_MESSAGES = {
   control_unavailable: '当前控制不可用',
+  manual_arm_unavailable: 'PC2 单击启用服务不可用',
+  manual_arm_busy: 'PC2 正在处理另一个启用请求',
+  manual_arm_outcome_unknown: 'PC2 启用回执未确认，请等待控制状态刷新',
+  manual_arm_profile_unavailable: 'PC2 当前没有部署受管手动发令入口',
+  manual_arm_timeout: 'PC2 等待机身停稳或受管接收器就绪超时',
+  manual_arm_not_ready: 'PC2 尚未满足启用条件',
+  local_grant_active: 'PC2 已有另一个本地运动许可',
   control_disabled: '当前控制已禁用',
   invalid_session: '控制会话已失效',
   session_expired: '控制会话已过期',
@@ -142,6 +150,7 @@ export function useGateway(cockpitVisible) {
   let mapRetryAt = 0
   let stopInFlight = false
   let armInFlight = false
+  let armingOneClick = false
   let nextStopRetryAt = 0
   let lastPollStartedAt = -Infinity
   let intent = 0
@@ -200,20 +209,20 @@ export function useGateway(cockpitVisible) {
     if (report.guard !== 'running') return 'stop_guard_unknown'
     return report.latched === false ? null : 'stop_latch_unknown'
   })
-  const available = computed(() => (
-    connection.value === 'connected'
-    && state.value?.robot?.online === true
-    && Boolean(controlSource.value)
-    && !remoteStopBlock.value
-    && state.value?.control?.available === true
-    && Boolean(limits.value.linear || limits.value.angular)
-  ))
-  const canArm = computed(() => available.value && state.value.control.armed === false
+  const controlConnected = computed(() => connection.value === 'connected'
+    && state.value?.robot?.online === true && Boolean(controlSource.value) && !remoteStopBlock.value)
+  const available = computed(() => controlConnected.value && state.value?.control?.available === true
+    && Boolean(limits.value.linear || limits.value.angular))
+  // PC2 尚无发令会话时，仅开放启用按钮。方向控制继续要求会话和机载状态已经确认。
+  const activationAvailable = computed(() => controlConnected.value && controlSource.value === 'unitree'
+    && state.value.control.armed === false && state.value.control.activation_available === true)
+  const canArm = computed(() => (available.value || activationAvailable.value) && state.value.control.armed === false
     && !ownSession.value && !pendingStop.value && !['arming', 'stopping'].includes(phase.value))
   const canStop = computed(() => Boolean(ownSession.value || pendingStop.value || phase.value === 'arming' || phase.value === 'stopping'))
   const hasControlSession = computed(() => ownSession.value !== null)
   const repeatedActions = computed(() => ownSession.value?.repeatedActions === true)
   const continuousHold = computed(() => ownSession.value?.continuousHold === true)
+  const reusableHold = computed(() => ownSession.value?.reusableHold === true)
   // 供维护页显示剩余时间，与现有会话超时使用同一个本机单调时钟截止点。
   const controlExpiresAt = computed(() => ownSession.value?.expiresAt ?? null)
 
@@ -228,7 +237,7 @@ export function useGateway(cockpitVisible) {
   function canDrive(direction) {
     const requested = DIRECTIONS[direction]
     const control = state.value?.control
-    const ready = repeatedActions.value
+    const ready = ownSession.value?.actionProtocol
       ? (phase.value === 'ready' && control?.armed === true && control.action_state === 'ready' && !activeAction)
         || (activeDirection.value === direction && ['action_starting', 'moving', 'release_required'].includes(phase.value))
       : ['ready', 'moving'].includes(phase.value)
@@ -411,13 +420,21 @@ export function useGateway(cockpitVisible) {
       if (!wasConnected) log('ok', '操作网关已连接')
       if (next.robot.online && (!wasConnected || !wasOnline)) log('ok', '机器人遥测在线')
       if (!next.robot.online && wasOnline) log('warn', '机器人遥测离线')
-      if (((ownSession.value || phase.value === 'arming') && !available.value)
-          || (ownSession.value && ownSession.value.source !== controlSource.value)) {
+      const session = ownSession.value
+      // 启用请求完成前发出的查询可能仍返回会话未建立。回执后的新查询必须读到真实会话。
+      const awaitingArm = phase.value === 'arming' && ((!session && armingOneClick)
+        || (session?.oneClick && startedAt < session.confirmedAt))
+      if (((session || phase.value === 'arming') && !available.value && !(awaitingArm && controlConnected.value))
+          || (session && session.source !== controlSource.value)) {
         void stop('机器人不可控，解除控制')
       } else if (ownSession.value && startedAt >= ownSession.value.confirmedAt) {
         if (next.control.armed === false) {
           void stop(describeError(next.control.reason))
-        } else if (ownSession.value.repeatedActions) {
+        } else if (phase.value === 'arming' && ownSession.value.oneClick) {
+          phase.value = 'ready'
+          if (ownSession.value.actionProtocol) updateActionState(next.control, startedAt)
+          log('ok', '控制会话已启用')
+        } else if (ownSession.value.actionProtocol) {
           updateActionState(next.control, startedAt)
         } else if (next.control.reason === 'obstacle' && activeDirection.value) {
           void stop('检测到障碍，停止并解除控制')
@@ -443,28 +460,35 @@ export function useGateway(cockpitVisible) {
     if (!canArm.value || armInFlight || document.hidden) return
     const current = ++intent
     const source = controlSource.value
+    const oneClick = activationAvailable.value
+    const wantsReusableHold = state.value?.mode === 'manual_control' && state.value.control.reusable_hold === true
     const startedAt = performance.now()
     phase.value = 'arming'
     fault.value = ''
     armInFlight = true
+    armingOneClick = oneClick
     try {
-      const result = await request('/api/control/session', { body: {} })
+      const result = await request('/api/control/session', {
+        body: wantsReusableHold ? { reusable_hold: true } : {},
+        timeout: oneClick ? MANUAL_ARM_TIMEOUT_MS : undefined,
+      })
       if (typeof result.session_id !== 'string' || !result.session_id) throw new Error('网关未返回有效会话')
       const lifetime = Number.isFinite(result.expires_in_ms) ? result.expires_in_ms : 0
       const repeats = result.repeated_actions === true
         && state.value?.mode === 'manual_control' && Number.isSafeInteger(result.action_limit_ms)
         && result.action_limit_ms > 0 && result.action_limit_ms <= 30000
-      // 持续按压由 PC2 显式授予，无总倒计时。混入其他许可字段时立即交回会话。
-      const hasContinuousMode = Object.hasOwn(result, 'continuous_hold')
+      // 用显式请求和回执协商同会话连续操作。旧 PC2 仍采用单段持续按压。
+      const hasHoldMode = Object.hasOwn(result, 'continuous_hold') || Object.hasOwn(result, 'reusable_hold')
+      const reuse = wantsReusableHold && result.reusable_hold === true
       const continuous = result.continuous_hold === true && state.value?.mode === 'manual_control'
-        && Object.keys(result).length === 3 && Object.hasOwn(result, 'ok') && Object.hasOwn(result, 'session_id')
+        && Object.keys(result).length === (reuse ? 4 : 3)
       const session = { id: result.session_id, source, expiresAt: repeats || continuous ? null : startedAt + lifetime,
         confirmedAt: performance.now(), repeatedActions: repeats, actionLimitMs: result.action_limit_ms,
-        continuousHold: continuous }
-      const modeValid = hasContinuousMode ? continuous
+        continuousHold: continuous, reusableHold: reuse, actionProtocol: repeats || reuse, oneClick }
+      const modeValid = hasHoldMode || wantsReusableHold || oneClick ? continuous && wantsReusableHold === reuse
         : repeats || (result.repeated_actions !== true && session.expiresAt > performance.now())
-      if (disposed || intent !== current || !available.value || source !== controlSource.value
-          || document.hidden || !modeValid) {
+      if (disposed || intent !== current || !(available.value || (oneClick && controlConnected.value))
+          || source !== controlSource.value || document.hidden || !modeValid) {
         pendingStop.value = { ...session, stoppedAt: performance.now() }
         await sendStop()
         return
@@ -474,9 +498,11 @@ export function useGateway(cockpitVisible) {
       if (session.expiresAt !== null) {
         leaseTimer = setTimeout(() => void stop('控制会话到期'), session.expiresAt - performance.now())
       }
-      phase.value = 'ready'
-      log('ok', '控制会话已启用')
-      // PC2 从授予会话起就监测链路。方向尚未按下时只发零帧，PC2 不向底盘发运动输出。
+      if (!oneClick) {
+        phase.value = 'ready'
+        log('ok', '控制会话已启用')
+      }
+      // 单击启用在状态确认前只保活零速，实际方向键仍由 canDrive 拦截。
       if (state.value.mode === 'manual_control') void sendVelocity(session, null)
     } catch (error) {
       if (intent === current && !disposed) {
@@ -486,6 +512,7 @@ export function useGateway(cockpitVisible) {
       }
     } finally {
       armInFlight = false
+      armingOneClick = false
       if (phase.value === 'stopping' && !pendingStop.value) phase.value = 'idle'
     }
   }
@@ -566,12 +593,14 @@ export function useGateway(cockpitVisible) {
     const current = intent
     const idle = direction === null
     const sameIntent = () => !disposed && ownSession.value === session && intent === current
-      && (activeDirection.value === direction || (idle && session.repeatedActions))
+      && (activeDirection.value === direction || (idle && session.actionProtocol))
     if (!sameIntent()) return
+    const waitingForOneClickState = session.oneClick && phase.value === 'arming' && controlConnected.value
+    const idleActive = available.value && (session.actionProtocol
+      ? ['ready', 'standstill_pending', 'action_stopping', 'release_required'].includes(phase.value) : phase.value === 'ready')
     const permitted = idle
-      ? state.value?.mode === 'manual_control' && available.value && session.source === controlSource.value
-        && (session.repeatedActions ? ['ready', 'action_stopping', 'release_required'].includes(phase.value) : phase.value === 'ready')
-      : canDrive(direction) && (!session.repeatedActions || (phase.value === 'moving' && activeAction === action))
+      ? state.value?.mode === 'manual_control' && session.source === controlSource.value && (idleActive || waitingForOneClickState)
+      : canDrive(direction) && (!session.actionProtocol || (phase.value === 'moving' && activeAction === action))
     if (!permitted || document.hidden || (session.expiresAt !== null && performance.now() >= session.expiresAt)) {
       void stop('控制条件失效')
       return
@@ -627,26 +656,36 @@ export function useGateway(cockpitVisible) {
     velocityController?.abort()
     actionExpiresAt.value = null
     keyboardStartRetryUntil = null
-    // 保留实体按键或指针状态，到期后按住不动也不能自动开始下一段。
+    // 保留实体按键或指针状态。连续按键模式缺少浏览器松键时，让 PC2 的看门狗撤销旧会话。
     phase.value = 'release_required'
     log('info', '本段动作结束，等待松键')
-    void sendVelocity(session, null)
+    if (!session.reusableHold) void sendVelocity(session, null)
   }
 
   function updateActionState(control, startedAt) {
-    if (!['ready', 'active', 'stopping', 'release_required'].includes(control.action_state)) {
+    const session = ownSession.value
+    const waiting = session.reusableHold && control.action_state === 'standstill_pending' && control.action_id == null
+    if (!waiting && !['ready', 'active', 'stopping', 'release_required'].includes(control.action_state)) {
       void stop('网关未确认动作状态，解除控制')
       return
     }
     const action = activeAction
-    if (!action || startedAt < action.startedAt) return
+    const ready = control.action_state === 'ready' && control.action_id == null
+    if (!action) {
+      if (waiting) phase.value = 'standstill_pending'
+      // 先于拒绝回执发出的查询不能恢复起步。期间继续发送零速心跳。
+      if (ready && phase.value === 'standstill_pending' && startedAt >= (session.standstillCheckAfter ?? 0)) {
+        phase.value = 'ready'
+      }
+      return
+    }
+    if (startedAt < action.startedAt) return
     if (action.released) {
       // 停车回执只确认收到释放。必须用回执之后发出的轮询确认 PC2 已停稳。
-      if (action.releaseConfirmedAt !== null && startedAt >= action.releaseConfirmedAt
-          && control.action_state === 'ready' && control.action_id == null) {
+      if (action.releaseConfirmedAt !== null && startedAt >= action.releaseConfirmedAt && (ready || waiting)) {
         activeAction = null
-        phase.value = 'ready'
-        log('ok', '停稳已确认，可以重新按键')
+        phase.value = waiting ? 'standstill_pending' : 'ready'
+        if (ready) log('ok', '停稳已确认，可以重新按键')
       }
     } else if (control.action_id === action.id && ['stopping', 'release_required'].includes(control.action_state)) {
       awaitPhysicalRelease(ownSession.value, action)
@@ -672,17 +711,28 @@ export function useGateway(cockpitVisible) {
         direction: action.direction === 'back' ? 'backward' : action.direction,
       }, controller, timeout: 650 })
       if (!sameIntent()) return
-      if (result.action_id !== action.id || !Number.isSafeInteger(result.expires_in_ms)
-          || result.expires_in_ms <= 0 || result.expires_in_ms > session.actionLimitMs
-          || !available.value || document.hidden) {
+      const durationValid = session.reusableHold ? Object.keys(result).length === 2
+        : Number.isSafeInteger(result.expires_in_ms) && result.expires_in_ms > 0
+          && result.expires_in_ms <= session.actionLimitMs
+      if (result.action_id !== action.id || !durationValid || !available.value || document.hidden) {
         throw new Error('网关未确认本段动作')
       }
-      actionExpiresAt.value = action.startedAt + result.expires_in_ms
+      actionExpiresAt.value = session.reusableHold ? null : action.startedAt + result.expires_in_ms
       phase.value = 'moving'
       log('info', `开始${DIRECTIONS[action.direction].label}`)
       void sendVelocity(session, action.direction, action)
     } catch (error) {
       if (sameIntent()) {
+        if (session.reusableHold && error.status === 409 && error.reason === 'standstill_required') {
+          // PC2 明确拒绝了起步，丢弃本次按键，重新停稳后必须再按一次。
+          session.standstillCheckAfter = performance.now()
+          activeAction = null
+          activeDirection.value = null
+          keyboardStartRetryUntil = null
+          phase.value = 'standstill_pending'
+          void sendVelocity(session, null)
+          return
+        }
         const fail = () => {
           const elapsed = Math.round(performance.now() - requestStartedAt)
           log('warn', `动作申请失败：${error.message}（序号 ${action.id}，${elapsed} ms）`)
@@ -744,7 +794,7 @@ export function useGateway(cockpitVisible) {
       const inputLabel = input === 'trusted_key' ? '可信键盘事件' : input === 'untrusted_key' ? '非可信键盘事件' : '屏幕方向键'
       log('info', `网页收到${DIRECTIONS[direction].label}输入（${inputLabel}）`)
     }
-    if (repeatedActions.value) {
+    if (ownSession.value.actionProtocol) {
       activeAction = { id: ++sequence, direction, startedAt, released: false, releaseConfirmedAt: null }
       phase.value = 'action_starting'
       void startAction(ownSession.value, activeAction)
@@ -758,7 +808,7 @@ export function useGateway(cockpitVisible) {
 
   function endDirection(direction) {
     if (activeDirection.value !== direction) return
-    if (repeatedActions.value && activeAction) {
+    if (ownSession.value.actionProtocol && activeAction) {
       void releaseAction(ownSession.value, activeAction)
     } else {
       void stop('松开方向键，停止并解除控制')
@@ -810,7 +860,7 @@ export function useGateway(cockpitVisible) {
 
   return { state, map, connection, mapStatus, phase, activeDirection, events, fault,
     cockpitState, cockpitConnection, cockpitRemoteStop,
-    remoteStop, remoteStopBlock, limits, available, canArm, canStop, canDrive, controlExpiresAt,
-    hasControlSession, repeatedActions, continuousHold, actionExpiresAt,
+    remoteStop, remoteStopBlock, limits, available, activationAvailable, canArm, canStop, canDrive, controlExpiresAt,
+    hasControlSession, repeatedActions, continuousHold, reusableHold, actionExpiresAt,
     arm, stop, beginDirection, endDirection, clearEvents }
 }

@@ -22,8 +22,10 @@ class StationManualChannelsTest(unittest.TestCase):
                             control=dict(source="unitree", available=True, armed=False, reason="ready",
                                          limits=dict(linear_mps=.05, angular_radps=.15)))
         self.session = "fake-session-for-test"
+        self.session_reply = {"ok": True, "protocol": PROTOCOL, "session_id": self.session, "expires_in_ms": 400}
         self.reset_reply = {"ok": True, "protocol": PROTOCOL, "reason": "stop_reset_done"}
         self.requests = []
+        self.last_control_payload = None
         mocked = patch("a2_gateway.station.HTTPConnection", side_effect=self.connect)
         mocked.start()
         self.addCleanup(mocked.stop)
@@ -49,7 +51,8 @@ class StationManualChannelsTest(unittest.TestCase):
                     self.assertGreater(timeout, 22.0)
                     reply = self.reset_reply
                 else:
-                    reply = {"ok": True, "protocol": PROTOCOL, "session_id": self.session, "expires_in_ms": 400}
+                    self.last_control_payload = json.loads(body)
+                    reply = self.session_reply
             if isinstance(reply, Exception):
                 raise reply
             response = connection.getresponse.return_value
@@ -128,6 +131,73 @@ class StationManualChannelsTest(unittest.TestCase):
                 self.requests.clear()
                 self.assertEqual(self.station.acquire({}), (409, {"ok": False, "reason": reason}))
                 self.assertFalse(any(method == "POST" for _, method, _, _ in self.requests))
+
+    def _enable_one_click_capability(self):
+        self.control["control"] = {**unavailable("local_authorization_required", "unitree"),
+                                   "activation_available": True}
+        self.session_reply = {"ok": True, "protocol": PROTOCOL, "session_id": self.session,
+                              "continuous_hold": True}
+
+    def test_one_click_only_unblocks_session_acquire(self):
+        self._enable_one_click_capability()
+        _, snapshot = self.station.state()
+        self.assertEqual(snapshot["control"], self.control["control"])
+        self.assertFalse(any(method == "POST" for _, method, _, _ in self.requests))
+        self.requests.clear()
+        self.assertEqual(self.station.acquire({}), (200, {"ok": True, "session_id": self.session,
+                                                         "continuous_hold": True}))
+        self.assertEqual(self.requests, [(8768, "GET", "/api/robot/state", True),
+                                         (8766, "GET", "/api/robot/state", False),
+                                         (8768, "POST", "/api/manual/session", True)])
+        self.requests.clear()
+        # 能申请新会话时，仍拒绝旧会话发来的非零速度与零速保活。
+        for speed in (0., .05):
+            self.assertEqual(self.station.velocity({"session_id": self.session, "sequence": 1,
+                                                    "linear_mps": speed, "angular_radps": 0.}),
+                             (409, {"ok": False, "reason": "local_authorization_required"}))
+        self.assertFalse(any(method == "POST" for _, method, _, _ in self.requests))
+
+    def test_reusable_opt_in_is_preserved_on_two_channel_station(self):
+        self._enable_one_click_capability()
+        opt_in = {"reusable_hold": True}
+        self.control["control"].update(opt_in)
+        _, snapshot = self.station.state()
+        self.assertIs(snapshot["control"]["reusable_hold"], True)
+        status, reply = self.station.acquire(opt_in)
+        self.assertEqual((status, reply), (502, {"ok": False, "reason": "pc2_invalid_response"}))
+        self.session_reply.update(opt_in)
+        self.assertEqual(self.station.acquire(opt_in), (200, {"ok": True, "session_id": self.session,
+                                                              "continuous_hold": True, **opt_in}))
+        self.assertEqual(self.last_control_payload, opt_in)
+        self.assertEqual(self.station.acquire({})[0], 502)
+
+    def test_one_click_requires_independent_fresh_matching_telemetry_and_guard(self):
+        self._enable_one_click_capability()
+        for report, field, value, reason in (
+            (self.readonly["remote_stop"], "latched", True, "stop_latched"),
+            (self.control["remote_stop"], "latched", None, "stop_guard_not_ready"),
+            (self.control["remote_stop"], "age_ms", MAX_AGE_MS, "stop_guard_not_ready"),
+            (self.readonly["robot"], "velocity", None, "feedback_stale"),
+            (self.control["robot"], "velocity", {"x_mps": 0., "age_ms": 500, "max_age_ms": 500},
+             "feedback_stale"),
+            (self.control["robot"], "id", "other-robot", "manual_robot_mismatch"),
+        ):
+            with self.subTest(field=field, value=value), patch.dict(report, {field: value}):
+                self.requests.clear()
+                _, snapshot = self.station.state()
+                self.assertNotIn("activation_available", snapshot["control"])
+                self.assertEqual(self.station.acquire({}), (409, {"ok": False, "reason": reason}))
+                self.assertFalse(any(method == "POST" for _, method, _, _ in self.requests))
+
+    def test_one_click_cannot_use_old_single_channel_station(self):
+        self._enable_one_click_capability()
+        self.control["control"]["reusable_hold"] = True
+        single = StationSource("http://127.0.0.1:8768", manual_key=self.key)
+        _, snapshot = single.state()
+        self.assertNotIn("activation_available", snapshot["control"])
+        self.assertNotIn("reusable_hold", snapshot["control"])
+        self.assertEqual(single.acquire({}), (409, {"ok": False, "reason": "local_authorization_required"}))
+        self.assertFalse(any(method == "POST" for _, method, _, _ in self.requests))
 
     def test_lock_can_be_reported_when_the_receiver_was_removed_by_the_guard(self):
         self.readonly["remote_stop"]["latched"] = self.control["remote_stop"]["latched"] = True
