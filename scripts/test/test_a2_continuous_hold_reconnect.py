@@ -28,17 +28,17 @@ class KeyboardPublisher:
     def __init__(self, path):
         self.path = path
         self.lock = Lock()
-        self.sample = (False, "neutral-before-session")
+        self.sample = (False, "neutral-before-session", None)
         self.finished = Event()
         self.wake = Event()
         self.published = Event()
         self.thread = Thread(target=self.run, daemon=True)
         self.thread.start()
 
-    def publish(self, pressed, epoch):
+    def publish(self, pressed, epoch, direction="forward"):
         with self.lock:
             self.published.clear()
-            self.sample = None if pressed is None else (pressed, epoch)
+            self.sample = None if pressed is None else (pressed, epoch, direction if pressed else None)
             self.wake.set()
         if not self.published.wait(1):
             raise RuntimeError("独立模拟键盘未更新")
@@ -48,10 +48,10 @@ class KeyboardPublisher:
             with self.lock:
                 self.wake.clear()
                 if self.sample is not None:
-                    pressed, epoch = self.sample
+                    pressed, epoch, direction = self.sample
                     staging = self.path.with_suffix(".next")
                     staging.write_text(json.dumps({"pressed": pressed, "epoch": epoch,
-                                                   "direction": "forward" if pressed else None,
+                                                   "direction": direction,
                                                    "observed_mono_ns": time.monotonic_ns()}))
                     staging.chmod(0o600)
                     staging.replace(self.path)
@@ -127,6 +127,83 @@ def stop_receiver(receiver):
 
 
 class ContinuousHoldReconnectTest(unittest.TestCase):
+    def test_reusable_session_moves_each_direction_then_closes(self):
+        with TemporaryDirectory(prefix="a2-reusable-mock-") as name, ExitStack() as stack:
+            sock, key_file = Path(name) / "mock.sock", Path(name) / "keyboard.json"
+            keyboard = KeyboardPublisher(key_file)
+            stack.callback(keyboard.close)
+            receiver = stack.enter_context(subprocess.Popen(
+                [sys.executable, "-ISBu", str(ROOT / "scripts/run_a2_manual_receiver.py"),
+                 "--backend", "mock", "--socket", str(sock), "--mock-keyboard-hold",
+                 "--mock-hold-file", str(key_file), "--continuous-hold"],
+                stdout=subprocess.PIPE, text=True,
+            ))
+            stack.callback(stop_receiver, receiver)
+            deadline = time.monotonic() + 4
+            while not sock.is_socket() and receiver.poll() is None and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.assertTrue(sock.is_socket(), "模拟接收器未就绪")
+            telemetry = MockTelemetry(receiver)
+            key = secrets.token_urlsafe(32)
+            local = LocalMotionClient(sock, require_source=True)
+            pc2 = stack.enter_context(serve(telemetry, role="pc2", manual=local, key=key))
+            station = StationSource(f"http://127.0.0.1:{pc2}", manual_key=key)
+            browser = stack.enter_context(serve(station, role="station", manual=station, key=key))
+            self.assertIs(request(browser, "/api/state")[1]["control"]["reusable_hold"], True)
+            status, session = request(browser, "/api/control/session", {"reusable_hold": True})
+            self.assertEqual(status, 200, session)
+            self.assertIs(session["continuous_hold"] and session["reusable_hold"], True)
+            session_id = session["session_id"]
+            sequence = 0
+            last_action = None
+
+            def command(path, **fields):
+                nonlocal sequence
+                sequence += 1
+                return request(browser, "/api/control/" + path,
+                               {"session_id": session_id, "sequence": sequence, **fields})
+
+            for direction, linear, angular in (
+                    ("forward", .2, 0.), ("backward", -.2, 0.), ("left", 0., .15), ("right", 0., -.15)):
+                keyboard.publish(True, f"press-{direction}", direction)
+                status, action = command("action/start", direction=direction)
+                self.assertEqual(status, 200, action)
+                self.assertEqual(action, {"ok": True, "action_id": sequence})
+                if last_action is not None:
+                    # 即使旧速度包使用更大的序号，上一段的动作编号也不能用于新一段。
+                    self.assertEqual(command("velocity", action_id=last_action, linear_mps=linear,
+                                             angular_radps=angular)[1]["reason"], "invalid_action")
+                last_action = action["action_id"]
+                self.assertEqual(command("velocity", action_id=last_action, linear_mps=linear,
+                                         angular_radps=angular)[0], 200)
+                if direction in ("forward", "left"):
+                    keyboard.publish(False, f"released-{direction}")
+                self.assertEqual(command("action/release", action_id=last_action)[0], 200)
+                if direction in ("backward", "right"):
+                    keyboard.publish(False, f"released-{direction}")
+                deadline = time.monotonic() + .6
+                while time.monotonic() < deadline:
+                    self.assertEqual(command("velocity", linear_mps=0., angular_radps=0.)[0], 200)
+                    control = request(browser, "/api/state")[1]["control"]
+                    self.assertIs(control["armed"], True, control)
+                    if control["action_state"] == "ready":
+                        break
+                    time.sleep(.025)
+                else:
+                    self.fail(f"{direction} 松键后未回到已启用的待命状态")
+
+            status, reply = request(browser, "/api/control/stop", {"session_id": session_id})
+            self.assertEqual((status, reply), (200, {"ok": True}))
+            self.assertEqual(command("velocity", linear_mps=0., angular_radps=0.)[0], 409)
+            self.assertEqual(local.velocity({"session_id": session_id, "sequence": sequence + 1,
+                                             "linear_mps": 0., "angular_radps": 0.})[1]["reason"],
+                             "invalid_session")
+            self.assertFalse(local.state()["armed"])
+            self.assertEqual([(event["event"], event["linear_mps"], event["angular_radps"])
+                              for event in telemetry.observed() if event["reason"] != "operator_stop"],
+                             [("move", .2, 0.), ("stop", 0., 0.), ("move", -.2, 0.), ("stop", 0., 0.),
+                              ("move", 0., .15), ("stop", 0., 0.), ("move", 0., -.15), ("stop", 0., 0.)])
+
     def exercise(self, fault, expected_reason):
         with TemporaryDirectory(prefix="a2-continuous-mock-") as name, ExitStack() as stack, ExitStack() as control:
             work = Path(name)

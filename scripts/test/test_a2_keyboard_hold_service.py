@@ -1,5 +1,8 @@
 """正式键盘证据协议的隔离测试。只使用本机匿名套接字和临时文件。"""
 
+from contextlib import redirect_stderr
+import errno
+from io import StringIO
 import json
 import os
 from pathlib import Path
@@ -10,6 +13,7 @@ import tempfile
 from threading import Event, Thread
 import time
 import unittest
+from unittest import mock
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -25,6 +29,8 @@ class PeerProtocolTests(unittest.TestCase):
         self.addCleanup(self.pc2.close)
         self.samples = Queue()
         self.cleared = Event()
+        self.pc2_progress = hold._PeerProgress(1)
+        self.station_progress = hold._PeerProgress(1)
 
     def run_peer(self, peer, method, *arguments):
         errors = Queue()
@@ -41,7 +47,8 @@ class PeerProtocolTests(unittest.TestCase):
         return thread, errors
 
     def start_receiver(self):
-        return self.run_peer(self.pc2, hold.receive_peer, self.key, self.samples.put, self.cleared.set)
+        return self.run_peer(self.pc2, hold.receive_peer, self.key, self.samples.put, self.cleared.set,
+                             self.pc2_progress)
 
     def station_hello(self):
         session = 'ab' * 16
@@ -61,7 +68,8 @@ class PeerProtocolTests(unittest.TestCase):
                 return {'pressed': True, 'epoch': 'press-1', 'direction': 'forward'}
             return {'pressed': False, 'epoch': 'released', 'direction': None}
 
-        workstation, station_errors = self.run_peer(self.station, hold.serve_peer, self.key, sample)
+        workstation, station_errors = self.run_peer(self.station, hold.serve_peer, self.key, sample,
+                                                    self.station_progress)
         first = self.samples.get(timeout=1)
         self.assertEqual(first['direction'], 'forward')
         pressed.clear()
@@ -81,6 +89,10 @@ class PeerProtocolTests(unittest.TestCase):
         self.assertFalse(receiver.is_alive())
         self.assertIsInstance(station_errors.get_nowait(), OSError)
         self.assertTrue(received_errors.empty() or isinstance(received_errors.get_nowait(), OSError))
+        self.assertEqual(self.station_progress.phase, 'keyboard_sample')
+        self.assertGreaterEqual(self.station_progress.frames, 2)
+        self.assertGreaterEqual(self.station_progress.max_sample_ms, self.station_progress.last_sample_ms)
+        self.assertIsNotNone(self.pc2_progress.last_reply_rtt_ms)
 
     def test_wrong_station_key_cannot_publish(self):
         receiver, errors = self.start_receiver()
@@ -89,7 +101,8 @@ class PeerProtocolTests(unittest.TestCase):
         hold._send(self.station, other, b'hello', session, {'session': session}, time.monotonic() + 1)
         receiver.join(timeout=1)
         self.assertFalse(receiver.is_alive())
-        self.assertIsInstance(errors.get_nowait(), ValueError)
+        self.assertIsInstance(errors.get_nowait(), hold._AuthenticationError)
+        self.assertEqual(self.pc2_progress.phase, 'hello_verify')
         self.assertTrue(self.samples.empty())
         self.assertTrue(self.cleared.is_set())
 
@@ -130,6 +143,79 @@ class PeerProtocolTests(unittest.TestCase):
         self.assertFalse(receiver.is_alive())
         self.assertIsInstance(errors.get_nowait(), TimeoutError)
         self.assertTrue(self.cleared.is_set())
+        self.assertEqual(self.pc2_progress.phase, 'reply_read')
+        self.assertEqual(self.pc2_progress.frames, 1)
+        self.assertIsNotNone(self.pc2_progress.last_reply_rtt_ms)
+
+    def test_hello_timeout_distinct_from_reply_timeout(self):
+        receiver, errors = self.start_receiver()
+        receiver.join(timeout=1)
+        self.assertFalse(receiver.is_alive())
+        self.assertIsInstance(errors.get_nowait(), TimeoutError)
+        self.assertTrue(self.cleared.is_set())
+        self.assertEqual(self.pc2_progress.phase, 'hello_read')
+        self.assertEqual(self.pc2_progress.frames, 0)
+        self.assertIsNone(self.pc2_progress.last_reply_rtt_ms)
+
+    def test_clean_peer_close_has_eof_phase_and_clears_sample(self):
+        receiver, errors = self.start_receiver()
+        self.station_hello()
+        hold._read_frame(self.station.fileno(), time.monotonic() + 1)
+        self.station.close()
+        receiver.join(timeout=1)
+        self.assertFalse(receiver.is_alive())
+        self.assertTrue(errors.empty())
+        self.assertTrue(self.cleared.is_set())
+        self.assertEqual(self.pc2_progress.phase, 'reply_read')
+
+
+class DiagnosticTests(unittest.TestCase):
+    @staticmethod
+    def records(output):
+        return [json.loads(line.removeprefix('A2_KEYBOARD_DIAG ')) for line in output.getvalue().splitlines()]
+
+    def test_logs_have_fixed_error_fields_and_suppression_count(self):
+        diagnostics = hold._Diagnostics('station')
+        progress = hold._PeerProgress(attempt=3, phase='keyboard_sample')
+        progress.phase_ns = 900_000_000
+        secret = 'device path and arbitrary frame contents'
+        failure = OSError(errno.EIO, secret)
+        output = StringIO()
+        with redirect_stderr(output), mock.patch.object(hold.time, 'monotonic_ns',
+                side_effect=[1_000_000_000, 1_200_000_000, 2_000_000_000, 2_100_000_000]):
+            diagnostics.emit('peer_end', progress, failure)
+            diagnostics.emit('peer_end', progress, failure)
+            diagnostics.emit('peer_end', progress, failure)
+            diagnostics.emit('peer_end', progress, hold._AuthenticationError(secret))
+        rows = self.records(output)
+        self.assertEqual([row['reason'] for row in rows], ['io_error', 'io_error', 'authentication_failed'])
+        self.assertEqual([row['suppressed'] for row in rows], [0, 1, 0])
+        self.assertEqual(rows[0]['phase'], 'keyboard_sample')
+        self.assertEqual(rows[0]['phase_elapsed_ms'], 100.)
+        self.assertEqual(rows[0]['errno'], errno.EIO)
+        self.assertEqual(rows[0]['mono_ns'], 1_000_000_000)
+        self.assertEqual(rows[0]['attempt'], 3)
+        self.assertNotIn(secret, output.getvalue())
+
+    def test_station_reports_keyboard_open_and_loopback_connect_separately(self):
+        with mock.patch.object(hold, '_physical_device', return_value=Path('/dev/input/event0')):
+            for side_effect, expected_phase, expected_errno in (
+                (OSError(errno.ENODEV, 'private path'), 'keyboard_open', errno.ENODEV),
+                (None, 'tunnel_connect', errno.ECONNREFUSED),
+            ):
+                with self.subTest(phase=expected_phase):
+                    output = StringIO()
+                    with redirect_stderr(output), mock.patch.object(hold, 'open_keyboard', side_effect=side_effect), \
+                            mock.patch.object(hold.socket, 'create_connection',
+                                              side_effect=ConnectionRefusedError(errno.ECONNREFUSED, 'socket')), \
+                            mock.patch.object(hold.time, 'sleep', side_effect=KeyboardInterrupt):
+                        with self.assertRaises(KeyboardInterrupt):
+                            hold._run_station(b'x' * 32, Path('/ignored'), hold._Diagnostics('station'))
+                    ready, ended = self.records(output)
+                    self.assertEqual(ready['event'], 'ready')
+                    self.assertEqual(ended['event'], 'peer_end')
+                    self.assertEqual(ended['phase'], expected_phase)
+                    self.assertEqual(ended['errno'], expected_errno)
 
 
 @unittest.skipUnless(os.geteuid() == 0, '权限检查需要 root 隔离环境')

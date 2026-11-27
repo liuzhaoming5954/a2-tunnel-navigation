@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import signal
 import socket
+import stat
 import struct
 from threading import Lock
 import time
@@ -19,6 +20,7 @@ from . import manual_link
 from .manual_link import (BROWSER_STOP_RESET_PATH, PC2_STOP_RESET_PATH, valid_stop_reset_confirmation,
                           valid_stop_reset_reason)
 from .manual_link import loopback as _loopback
+from .motion import _command_receipt
 from .odin1_pose import odin1_pose_snapshot, pc2_pose_snapshot, read_odin_object
 from .remote_stop_status import RemoteStopStatus, blocked_reason, reset_blocked_reason
 
@@ -36,6 +38,7 @@ _STOP_RESET_SOCKET_BYTES = 512
 _STOP_RESET_STATUS_TIMEOUT_S = 0.45
 _STOP_RESET_TIMEOUT_S = 22.0
 _STOP_RESET_STATUS_TTL_S = 1.0
+_MANUAL_ARM_TIMEOUT_S = 9.0
 
 
 def _authority(value):
@@ -151,6 +154,68 @@ class LocalStopReset:
             with self._status_lock:
                 self._status_cache = None
             self._reset_lock.release()
+
+
+class LocalManualArm:
+    """连接独立的 root 授权入口。网关只发送固定的启用请求。"""
+
+    def __init__(self, path):
+        self.path = Path(path)
+        if not self.path.is_absolute():
+            raise ValueError("遥控启用套接字必须使用绝对路径")
+        self._lock = Lock()
+
+    def available(self):
+        try:
+            info = self.path.lstat()
+            return stat.S_ISSOCK(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o007
+        except OSError:
+            return False
+
+    def acquire(self, payload):
+        if not self._lock.acquire(blocking=False):
+            return 409, {"ok": False, "reason": "manual_arm_busy"}
+        try:
+            if not self.available():
+                return 503, {"ok": False, "reason": "manual_arm_unavailable"}
+            deadline = time.monotonic() + _MANUAL_ARM_TIMEOUT_S
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                connection.settimeout(_MANUAL_ARM_TIMEOUT_S)
+                connection.connect(str(self.path))
+                peer = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+                if struct.unpack("3i", peer)[1] != 0:
+                    raise PermissionError("遥控启用套接字对端不是 root")
+                # 管理端只接受两条固定操作，不转发网页提供的其他字段。
+                operation = (b'{"op":"activate_reusable_hold"}\n' if payload.get("reusable_hold") is True
+                             else b'{"op":"activate"}\n')
+                connection.sendall(operation)
+                reply = bytearray()
+                while b"\n" not in reply and len(reply) <= _STOP_RESET_SOCKET_BYTES:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("等待遥控启用回执超时")
+                    connection.settimeout(remaining)
+                    chunk = connection.recv(_STOP_RESET_SOCKET_BYTES + 1 - len(reply))
+                    if not chunk:
+                        break
+                    reply.extend(chunk)
+            record, end, rest = reply.partition(b"\n")
+            if not end or rest or len(reply) > _STOP_RESET_SOCKET_BYTES:
+                raise ValueError("遥控启用回执长度无效")
+            result = json.loads(record, object_pairs_hook=_distinct_keys, parse_constant=_reject_constant)
+            if isinstance(result, dict) and set(result) == {"ok", "reason"} and result["ok"] is False:
+                if manual_link.valid_stop_reset_reason(result["reason"]):
+                    return 409, result
+            if not isinstance(result, dict) or result.get("ok") is not True or result.get("continuous_hold") is not True:
+                raise ValueError("遥控启用回执无效")
+            return 200, _command_receipt("acquire", payload, result)
+        except (FileNotFoundError, ConnectionRefusedError, PermissionError):
+            return 503, {"ok": False, "reason": "manual_arm_unavailable"}
+        except (OSError, ValueError, RecursionError):
+            # 成功回执若丢失，接收器仍会因零速心跳缺失自行撤权。网关不重发启用请求。
+            return 502, {"ok": False, "reason": "manual_arm_outcome_unknown"}
+        finally:
+            self._lock.release()
 
 
 def _read_odin1_cloud(directory):
@@ -313,6 +378,12 @@ class GatewayHandler(BaseHTTPRequestHandler):
             return manual_link.unavailable("manual_receiver_source_mismatch")
         if not guarded and source == "unitree":
             return manual_link.unavailable("stop_guard_not_ready", source)
+        if (self.server.manual_arm is not None and self.server.manual_arm.available()
+                and not control["available"] and not control["armed"]
+                and control["reason"] in manual_link.ACTIVATION_WAIT_REASONS):
+            # 仅允许提出启用请求。实际会话及任何速度指令仍须由 PC2 核准。
+            return {**manual_link.unavailable(control["reason"], "unitree"),
+                    "activation_available": True, "reusable_hold": True}
         return control
 
     def _pc2_get(self, path):
@@ -480,13 +551,16 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 # 页面之外的调用也须经机载门禁；停止请求始终可达。只有独立 mock 可无真实守护。
                 observer = self.server.remote_stop
                 control = self._pc2_manual_state(observer.snapshot() if observer is not None else None)
-                if not control["available"]:
+                if not control["available"] and not (operation == "acquire" and control.get("activation_available")):
                     self._error(409, control["reason"])
                     return
                 if self.server.telemetry.snapshot()["robot"].get("online") is not True:
                     self._error(409, "robot_offline")
                     return
-            status, reply = getattr(self.server.manual_control, operation)(payload)
+            if self.server.role == "pc2" and operation == "acquire" and self.server.manual_arm is not None:
+                status, reply = self.server.manual_arm.acquire(payload)
+            else:
+                status, reply = getattr(self.server.manual_control, operation)(payload)
             if self.server.role == "pc2":
                 reply = {**reply, "protocol": manual_link.PROTOCOL}
             self._json(status, reply)
@@ -507,7 +581,7 @@ class GatewayServer(ThreadingHTTPServer):
     def __init__(self, address, telemetry, *, mode, role=None, control=None, static_root=None,
                  odin1_map_dir=DEFAULT_ODIN1_MAP_DIR, odin1_pose_file=None, single_goal=None,
                  manual_control=None, manual_key=None, remote_stop=None, stop_reset_socket=None,
-                 platform_watchdog=None):
+                 platform_watchdog=None, manual_arm_socket=None):
         # 旧的模拟单测直接注入 Simulator；实机和上位机必须走各自的只读分派。
         self.role = role or ("simulator" if mode == "simulator" else "pc2")
         if self.role not in ("station", "pc2", "simulator"):
@@ -536,6 +610,9 @@ class GatewayServer(ThreadingHTTPServer):
         if stop_reset_socket is not None and (self.role != "pc2" or manual_control is None or remote_stop is None):
             raise ValueError("停车复位套接字仅适用于附带守护观测的 PC2 独立手动遥控网关")
         self.stop_reset = LocalStopReset(stop_reset_socket) if stop_reset_socket is not None else None
+        if manual_arm_socket is not None and (self.role != "pc2" or manual_control is None or remote_stop is None):
+            raise ValueError("遥控启用套接字仅适用于附带守护观测的 PC2 独立手动遥控网关")
+        self.manual_arm = LocalManualArm(manual_arm_socket) if manual_arm_socket is not None else None
         self.manual_control, self.manual_key = manual_control, manual_key
         if ":" in address[0]:
             self.address_family = socket.AF_INET6
@@ -592,6 +669,7 @@ def main(argv=None):
     parser.add_argument("--enable-manual-control", action="store_true", help="在本站显式启用低速机身遥控")
     parser.add_argument("--manual-key-file", type=Path, help="上位机与 PC2 遥控接口使用的私有密钥文件")
     parser.add_argument("--manual-socket", type=Path, help="PC2 上独立受管遥控接收器的 UNIX 套接字")
+    parser.add_argument("--manual-arm-socket", type=Path, help="PC2 单击启用的独立 root UNIX 套接字")
     parser.add_argument("--stop-reset-socket", type=Path, help="PC2 上 root 停车锁存复位服务的 UNIX 套接字")
     parser.add_argument("--goal-map-bin", type=Path, help="PC2 实际用于 ODIN1 重定位的 BIN")
     parser.add_argument("--goal-grid-yaml", type=Path, help="PC2 与该 BIN 坐标对齐的 Nav2 三态导航栅格 YAML")
@@ -614,6 +692,9 @@ def main(argv=None):
     if args.stop_reset_socket is not None and not (
             role == "pc2" and args.enable_manual_control and args.stop_reset_socket.is_absolute()):
         parser.error("--stop-reset-socket 仅适用于 PC2 独立手动遥控网关，且须使用绝对路径")
+    if args.manual_arm_socket is not None and not (
+            role == "pc2" and args.enable_manual_control and args.manual_arm_socket.is_absolute()):
+        parser.error("--manual-arm-socket 仅适用于 PC2 独立手动遥控网关，且须使用绝对路径")
     if role != "pc2" and args.odin1_pose_file is not None:
         parser.error("--odin1-pose-file 属于 PC2 本机")
     if role == "pc2" and (args.static_root is not None or args.odin1_map_dir is not None):
@@ -720,7 +801,8 @@ def main(argv=None):
                                static_root=static_root, odin1_map_dir=map_dir, single_goal=single_goal,
                                odin1_pose_file=args.odin1_pose_file, manual_control=manual_control,
                                manual_key=manual_key, remote_stop=RemoteStopStatus() if role == "pc2" else None,
-                               stop_reset_socket=args.stop_reset_socket, platform_watchdog=platform_watchdog)
+                               stop_reset_socket=args.stop_reset_socket, platform_watchdog=platform_watchdog,
+                               manual_arm_socket=args.manual_arm_socket)
     except BaseException:
         if single_goal is not None and single_goal is not telemetry:
             single_goal.close()

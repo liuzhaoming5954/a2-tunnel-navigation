@@ -1,0 +1,17 @@
+[Unit]
+Description=A2 驾驶舱单次启用代理
+Wants=a2-vendor-owner.service
+After=a2-vendor-owner.service
+
+[Socket]
+ListenStream=/run/a2-cockpit-arm.sock
+SocketUser=root
+SocketGroup=unitree
+SocketMode=0660
+Accept=yes
+MaxConnections=4
+Backlog=4
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

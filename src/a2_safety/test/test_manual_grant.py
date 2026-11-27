@@ -147,6 +147,38 @@ class GrantTest(unittest.TestCase):
         self.owner['epoch'] = 'producer:new-cycle'
         self.assertEqual(self.status()['reason'], 'local_grant_epoch_changed')
 
+    def test_cockpit_issues_all_directions_with_existing_continuous_hold_scope(self):
+        result = grant.issue_cockpit(0)
+        self.assertEqual(result['grant'], {'serial': 1, 'issued_at': self.now, 'expires_at': None,
+                                           'directions': sorted(grant.DIRECTIONS), 'continuous_hold': True})
+        self.assertEqual(self.status(), {'serial': 1, 'grant': result['grant'], 'reason': 'granted',
+                                         'cockpit_managed': True})
+        self.assertEqual(grant.issue_cockpit(1)['reason'], 'local_grant_active')
+        self.now += grant.MAX_SECONDS + 1
+        self.assertEqual(self.status()['grant'], result['grant'])
+        self.latch.touch()
+        self.assertIsNone(self.status()['grant'])
+        self.assertTrue(self.status()['cockpit_managed'])
+        self.assertEqual(grant.issue_cockpit(1)['reason'], 'stop_latched')
+
+    def test_cockpit_cleanup_only_reclaims_its_expected_grant(self):
+        self.assertTrue(self.issue()['ok'])
+        self.assertNotIn('cockpit_managed', self.status())
+        self.assertEqual(grant.issue_cockpit(1)['reason'], 'local_grant_active')
+        self.assertEqual(grant.revoke_cockpit(1)['reason'], 'local_grant_not_cockpit')
+        self.assertEqual(self.status()['serial'], 1)
+
+        self.now += 3.
+        self.assertTrue(grant.issue_cockpit(1)['ok'])
+        self.assertEqual(grant.revoke_cockpit(1)['reason'], 'local_grant_serial_changed')
+        with ThreadPoolExecutor(2) as pool:
+            results = list(pool.map(lambda _: grant.revoke_cockpit(2), range(2)))
+        self.assertCountEqual([r.get('reason', 'ok') for r in results], ['ok', 'local_grant_serial_changed'])
+        self.assertEqual(self.status(), {'serial': 3, 'grant': None, 'reason': 'local_authorization_required'})
+        self.assertTrue(self.issue(3)['ok'])
+        self.assertEqual(grant.revoke_cockpit(4)['reason'], 'local_grant_not_cockpit')
+        self.assertEqual(self.status()['serial'], 4)
+
     def test_site_confirmation_grant_is_exactly_one_forward_direction_and_five_seconds(self):
         invalid = [(4, ['forward'], True), (6, ['forward'], True), (5., ['forward'], True),
                    (5, ['backward'], True), (5, ['forward', 'left'], True),
@@ -240,6 +272,8 @@ class GrantTest(unittest.TestCase):
         with patch.object(grant.os, 'geteuid', return_value=grant.TRUSTED_UID + 1):
             self.assertEqual(self.issue()['reason'], 'local_admin_required')
             self.assertEqual(grant.revoke()['reason'], 'local_admin_required')
+            self.assertEqual(grant.issue_cockpit(0)['reason'], 'local_admin_required')
+            self.assertEqual(grant.revoke_cockpit(1)['reason'], 'local_admin_required')
         self.assertTrue(self.issue()['ok'])
         data = grant.DIRECTORY / grant.FILENAME
         data.chmod(0o664)

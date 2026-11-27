@@ -489,7 +489,7 @@ class StopHardware:
                 return None
         return end
 
-    def _motion_feedback(self, began_at):
+    def _motion_feedback(self, began_at, *, include_settling=False):
         with self._state_lock:
             if not self._active or self._posture != DEFAULT_MODE or not math.isfinite(began_at):
                 return None
@@ -502,11 +502,12 @@ class StopHardware:
             evidence_end = min(body_end, imu_end)
             if self._motion_body.frames[-1][1]:
                 return "moving", evidence_end
-            # 刚回到低速、漂移超限等情况需要重新确认停稳，否则保持未知。
+            # 两路仍新鲜匹配，但刚回到低速或漂移超限时，须重新累计停稳窗口。
+            # 仅应显式调用方要求报告这段过渡状态，停稳判据与样本时间保持同一来源。
             stopped_at = self._standstill_locked(began_at, now, standing_only=True)
             if stopped_at is None or not all(stream.window(begin, stopped_at - HOLD_S, stopped_at)
                                              for stream in (self._motion_body, self._motion_imu)):
-                return None
+                return ("settling", evidence_end) if include_settling else None
             return "stopped", min(evidence_end, stopped_at)
 
 
@@ -532,9 +533,9 @@ class ReadOnlyStandstill:
         return {"value": "stopped", "observed_at": stamp, "sport_mode": DEFAULT_MODE,
                 "gait_type": 0, "error_code": 0}
 
-    def motion_feedback(self):
+    def motion_feedback(self, *, include_settling=False):
         """提供双路实测运动或确认后的停稳反馈，不向底盘发令。"""
-        report = self._hardware._motion_feedback(self._began_at)
+        report = self._hardware._motion_feedback(self._began_at, include_settling=include_settling)
         if report is None:
             return None
         value, stamp = report

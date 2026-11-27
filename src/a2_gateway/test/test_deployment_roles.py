@@ -7,8 +7,10 @@ from pathlib import Path
 import tempfile
 from threading import Thread
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
+from a2_gateway.manual_link import PROTOCOL, unavailable
+from a2_gateway.remote_stop_status import MAX_AGE_MS, SOURCE
 from a2_gateway.server import GatewayServer
 
 
@@ -21,10 +23,10 @@ class DeploymentRolesTest(unittest.TestCase):
         self.dist.mkdir()
         (self.dist / "index.html").write_bytes(b"<title>station</title>")
 
-    def start_handler(self, role, source):
+    def start_handler(self, role, source, *, mode="robot_readonly", **options):
         # 每例只启动一个随机回环端口，另一个角色由内存对象取代。
-        server = GatewayServer(("127.0.0.1", 0), source, mode="robot_readonly", role=role,
-                               static_root=self.dist, odin1_map_dir=self.root)
+        server = GatewayServer(("127.0.0.1", 0), source, mode=mode, role=role,
+                               static_root=self.dist, odin1_map_dir=self.root, **options)
         thread = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
         thread.start()
         self.addCleanup(thread.join, 2)
@@ -32,10 +34,14 @@ class DeploymentRolesTest(unittest.TestCase):
         self.addCleanup(server.shutdown)
         self.port = server.server_port
 
-    def request(self, path, method="GET"):
+    def request(self, path, method="GET", *, payload=None, key=None):
         conn = HTTPConnection("127.0.0.1", self.port, timeout=2)
         try:
-            conn.request(method, path)
+            headers = {} if key is None else {"Authorization": "Bearer " + key}
+            body = None if payload is None else json.dumps(payload).encode()
+            if body is not None:
+                headers["Content-Type"] = "application/json"
+            conn.request(method, path, body=body, headers=headers)
             response = conn.getresponse()
             data = response.read()
             if response.getheader("Content-Type", "").startswith("application/json"):
@@ -107,3 +113,82 @@ class DeploymentRolesTest(unittest.TestCase):
         self.assertEqual(self.request("/api/map"), (200, {"id": "local-grid"}))
         self.assertEqual(self.request("/api/maps/odin1/metadata"), (200, metadata))
         self.assertEqual(self.request(f"/api/maps/odin1/points?version={digest}"), (200, points))
+
+    def _start_pc2_activation(self):
+        # 模拟接收器仍无运动许可。装入仅返回固定会话的假 broker，验证实际 HTTP 路由。
+        telemetry = Mock(spec=["snapshot", "close"])
+        telemetry.snapshot.return_value = {"robot": {"id": "field-robot", "online": True}}
+        guard = Mock(spec=["snapshot", "start", "close"])
+        guard.snapshot.return_value = dict(source=SOURCE, guard="running", latched=False, age_ms=40,
+                                           max_age_ms=MAX_AGE_MS)
+        receiver = Mock(spec=["state", "acquire", "velocity"])
+        receiver.state.return_value = unavailable("local_authorization_required", "unitree")
+        broker = Mock(spec=["available", "acquire"])
+        broker.available.return_value = True
+        broker.acquire.return_value = 200, {"ok": True, "session_id": "mock-session-receipt",
+                                             "continuous_hold": True}
+        key = "test" * 8
+        with patch("a2_gateway.server.LocalManualArm", return_value=broker):
+            self.start_handler("pc2", telemetry, mode="manual_control", remote_stop=guard,
+                               manual_control=receiver, manual_key=key, manual_arm_socket=self.root / "arm.sock")
+        return telemetry, guard, receiver, broker, key
+
+    def test_pc2_one_click_requires_authenticated_session_post_and_never_sends_motion(self):
+        _, _, receiver, broker, key = self._start_pc2_activation()
+        state = "/api/robot/state"
+        session = "/api/manual/session"
+        self.assertNotIn("control", self.request(state)[1])
+        self.assertEqual(self.request(state, key="wrong-key")[1]["control"], unavailable("manual_auth_failed"))
+        self.assertEqual(self.request(state, key=key)[1]["control"],
+                         {**receiver.state.return_value, "activation_available": True, "reusable_hold": True})
+        broker.acquire.assert_not_called()
+        for invalid in (None, "wrong-key"):
+            self.assertEqual(self.request(session, "POST", payload={}, key=invalid),
+                             (403, {"ok": False, "reason": "manual_auth_failed"}))
+        self.assertEqual(self.request(session, "POST", payload={"direction": "forward"}, key=key),
+                         (400, {"ok": False, "reason": "invalid_manual_command"}))
+        for speed in (0., .05):
+            self.assertEqual(self.request("/api/manual/velocity", "POST", key=key, payload={
+                "session_id": "mock-session-receipt", "sequence": 1, "linear_mps": speed, "angular_radps": 0.,
+            }), (409, {"ok": False, "reason": "local_authorization_required"}))
+        broker.acquire.assert_not_called()
+        self.assertEqual(self.request(session, "POST", payload={}, key=key),
+                         (200, {**broker.acquire.return_value[1], "protocol": PROTOCOL}))
+        broker.acquire.assert_called_once_with({})
+        receiver.acquire.assert_not_called()
+        receiver.velocity.assert_not_called()
+
+    def test_pc2_reusable_hold_forwards_only_explicit_opt_in(self):
+        _, _, receiver, broker, key = self._start_pc2_activation()
+        session = "/api/manual/session"
+        opt_in = {"reusable_hold": True}
+        for invalid in ({"reusable_hold": False}, {"reusable_hold": 1}, {**opt_in, "direction": "forward"}):
+            self.assertEqual(self.request(session, "POST", payload=invalid, key=key),
+                             (400, {"ok": False, "reason": "invalid_manual_command"}))
+        receipt = {**broker.acquire.return_value[1], **opt_in}
+        broker.acquire.return_value = 200, receipt
+        self.assertEqual(self.request(session, "POST", payload=opt_in, key=key),
+                         (200, {**receipt, "protocol": PROTOCOL}))
+        broker.acquire.assert_called_once_with(opt_in)
+        receiver.acquire.assert_not_called()
+        receiver.velocity.assert_not_called()
+
+    def test_pc2_one_click_still_checks_guard_and_telemetry_before_broker(self):
+        telemetry, guard, receiver, broker, key = self._start_pc2_activation()
+        sample = guard.snapshot.return_value
+        for values, reason in (({"latched": True}, "stop_latched"),
+                               ({"guard": "unknown", "latched": None}, "stop_guard_not_ready"),
+                               ({"age_ms": MAX_AGE_MS}, "stop_guard_not_ready")):
+            with self.subTest(reason=reason, values=values):
+                guard.snapshot.return_value = {**sample, **values}
+                status, report = self.request("/api/robot/state", key=key)
+                self.assertEqual((status, report["control"]), (200, unavailable(reason)))
+                self.assertEqual(self.request("/api/manual/session", "POST", payload={}, key=key),
+                                 (409, {"ok": False, "reason": reason}))
+        guard.snapshot.return_value = sample
+        telemetry.snapshot.return_value["robot"]["online"] = False
+        self.assertEqual(self.request("/api/manual/session", "POST", payload={}, key=key),
+                         (409, {"ok": False, "reason": "robot_offline"}))
+        broker.acquire.assert_not_called()
+        receiver.acquire.assert_not_called()
+        receiver.velocity.assert_not_called()

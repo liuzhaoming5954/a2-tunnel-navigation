@@ -38,6 +38,7 @@ def command_direction(linear, angular):
 class Feedback(Enum):
     STOPPED = "stopped"
     MOVING = "moving"
+    SETTLING = "settling"
 
 
 T = TypeVar("T")
@@ -125,6 +126,12 @@ class VelocityRequest:
     angular_radps: float
     # 绑定独立采样的按压周期，供底盘适配器在最终发令前复核。
     hold_epoch: str | None = None
+    reusable_hold: bool = False
+    require_standstill: bool = False
+
+
+class HoldReleasedBeforeOutput(Exception):
+    """接收器在调用底盘 SDK 前观察到实体键松开。"""
 
 
 class Output(Protocol):
@@ -145,7 +152,7 @@ class Output(Protocol):
 class _Action:
     action_id: int
     direction: Direction
-    expires_at: float
+    expires_at: float | None
     ended: bool = False
     released: bool = False
 
@@ -163,6 +170,11 @@ class _Lease:
     hold_epoch: str | None = None
     neutral_hold_epoch: str | None = None
     hold_direction: Direction | None = None
+    reusable_hold: bool = False
+
+    @property
+    def uses_actions(self):
+        return self.grant.repeated_actions or self.reusable_hold
 
 
 def _valid_sequence(value):
@@ -291,6 +303,31 @@ class MaintenanceArbiter:
         lease.hold_epoch, lease.hold_direction = hold.epoch, hold.direction
         return None
 
+    def _track_reusable_hold(self, inputs, now, lease):
+        hold = self._continuous_hold_sample(inputs, now)
+        if hold is None:
+            return "operator_hold_stale"
+        action = lease.action
+        if action is None:
+            if not hold.pressed:
+                lease.neutral_hold_epoch = hold.epoch
+            return None
+        if action.ended:
+            # 浏览器释放、独立键盘回中和停车确认缺一不可。停车期间按下的键不排队。
+            if (action.released and self._stop_requested_at is None and not hold.pressed
+                    and hold.epoch != lease.hold_epoch):
+                lease.neutral_hold_epoch = hold.epoch
+                lease.hold_epoch = None
+                lease.action = None
+            return None
+        if not hold.pressed:
+            if hold.epoch == lease.hold_epoch:
+                return "operator_hold_changed"
+            # 即使浏览器继续发旧速度包，独立键盘回中也会结束本段并立即停车。
+            self._end_action(lease, "action_hold_released", inputs, now)
+            return None
+        return self._check_operator_hold(inputs, now, lease.hold_epoch, action.direction)
+
     def _granted(self, grant, now):
         if (not isinstance(grant, LocalGrant) or type(grant.serial) is not int or grant.serial <= 0
                 or not _finite(grant.issued_at) or not self._started_at < grant.issued_at <= now
@@ -329,7 +366,15 @@ class MaintenanceArbiter:
         owner = self._sample(inputs.owner, now)
         if owner not in (Owner.RELEASED, Owner.NEUTRAL):
             return "control_owned" if owner is Owner.OWNED else "control_unknown"
-        if self._lease and self._lease.grant.continuous_hold:
+        reusable = self._lease is not None and self._lease.reusable_hold
+        feedback = self._sample(inputs.feedback, now)
+        feedback_valid = feedback in (Feedback.STOPPED, Feedback.MOVING) or (
+            reusable and feedback is Feedback.SETTLING)
+        if reusable:
+            reason = self._track_reusable_hold(inputs, now, self._lease)
+            if reason:
+                return reason
+        elif self._lease and self._lease.grant.continuous_hold:
             reason = self._track_continuous_hold(inputs, now, self._lease)
             if reason:
                 return reason
@@ -339,27 +384,27 @@ class MaintenanceArbiter:
             reason = self._check_operator_hold(inputs, now, self._lease.hold_epoch, direction)
             if reason:
                 return reason
-        if self._lease and self._lease.grant.repeated_actions:
+        if self._lease and self._lease.uses_actions:
             # 减速过程允许有效的运动反馈，但本地授权、链路和实时机身状态仍须持续有效。
             if not self._granted(inputs.grant, now) or inputs.grant != self._lease.grant:
                 return "authorization_changed"
             if now >= self._lease.command_deadline:
                 return "deadman_expired"
             if self._stop_requested_at is not None:
-                if self._sample(inputs.feedback, now) in (Feedback.STOPPED, Feedback.MOVING):
-                    return None
-                return "feedback_stale"
+                return None if feedback_valid else "feedback_stale"
         if self._stop_requested_at is not None:
             return "stop_unconfirmed"
-        feedback = self._sample(inputs.feedback, now)
-        if feedback not in (Feedback.STOPPED, Feedback.MOVING):
+        if not feedback_valid:
             # 现场停稳反馈新鲜、且没有许可时，页面显示等待授权，不把结束后的状态误报为反馈过期。
             if (self._lease is None and inputs.grant is None
                     and self._sample(inputs.site_stop_feedback, now) is Feedback.STOPPED):
                 return "local_authorization_required"
             return "feedback_stale"
         if not self._lease or self._lease.direction is None:
-            if feedback is not Feedback.STOPPED:
+            # 已启用但未启动动作时，真实反馈暂未确认停稳，只阻止新动作。
+            # 已受理起步但未发速度时，仍要求连续停稳，否则撤权。
+            idle_reusable = reusable and self._lease.action is None
+            if feedback is not Feedback.STOPPED and not idle_reusable:
                 return "standstill_required"
         directions = self._directions(inputs, now)
         if directions is None:
@@ -408,7 +453,8 @@ class MaintenanceArbiter:
         if not lease.action.ended:
             lease.action.ended = True
             lease.direction = None
-            lease.hold_epoch = None
+            if not lease.reusable_hold:
+                lease.hold_epoch = None
             self._request_stop(lease, reason, inputs, now)
 
     def _request_pending_stop(self, inputs, now):
@@ -437,7 +483,8 @@ class MaintenanceArbiter:
             if self._site_stop_pending and self._sample(feedback, now) is None:
                 # 现场许可可能已经到期。继续读取该会话的停稳证据，仍要求停车请求之后取得的样本。
                 feedback = inputs.site_stop_feedback
-            if (self._sample(feedback, now) is Feedback.STOPPED
+            if ((not self._lease or not self._lease.reusable_hold or self._stop_accepted)
+                    and self._sample(feedback, now) is Feedback.STOPPED
                     and feedback.observed_at > self._stop_requested_at):
                 self._stop_requested_at = None
                 self._site_stop_pending = False
@@ -449,9 +496,10 @@ class MaintenanceArbiter:
             self._revoke(reason, inputs, now)
         if self._lease and self._lease.action:
             action = self._lease.action
-            if not action.ended and now >= action.expires_at:
+            if not action.ended and action.expires_at is not None and now >= action.expires_at:
                 self._end_action(self._lease, "action_expired", inputs, now)
-            if action.ended and action.released and self._stop_requested_at is None:
+            if (not self._lease.reusable_hold and action.ended and action.released
+                    and self._stop_requested_at is None):
                 self._lease.action = None
         return inputs, now, reason
 
@@ -461,16 +509,20 @@ class MaintenanceArbiter:
 
     def state(self):
         with self._lock:
-            _, _, reason = self._advance()
+            inputs, now, reason = self._advance()
             limits = {"linear_mps": self._limits.linear_mps, "angular_radps": self._limits.angular_radps}
             if self._limits.forward_mps is not None:
                 limits["forward_mps"] = self._limits.forward_mps
             state = {"available": reason is None, "armed": self._lease is not None,
                      "reason": reason or ("armed" if self._lease else "ready"), "limits": limits}
-            if self._lease and self._lease.grant.repeated_actions:
+            if reason is None and inputs.grant.continuous_hold:
+                state["reusable_hold"] = True
+            if self._lease and self._lease.uses_actions:
                 action = self._lease.action
                 if action is None:
-                    state["action_state"] = "ready"
+                    state["action_state"] = (
+                        "standstill_pending" if self._lease.reusable_hold
+                        and self._sample(inputs.feedback, now) is not Feedback.STOPPED else "ready")
                 else:
                     state["action_id"] = action.action_id
                     if self._stop_requested_at is not None:
@@ -480,7 +532,8 @@ class MaintenanceArbiter:
             return state
 
     def acquire(self, payload):
-        if payload != {}:
+        if (not isinstance(payload, dict) or (
+                payload and (set(payload) != {"reusable_hold"} or payload["reusable_hold"] is not True))):
             return _reject(400, "invalid_request")
         with self._lock:
             inputs, now, reason = self._advance()
@@ -488,13 +541,20 @@ class MaintenanceArbiter:
                 return _reject(409, reason)
             if self._lease:
                 return _reject(409, "session_busy")
+            reusable = payload.get("reusable_hold") is True
+            if reusable and not inputs.grant.continuous_hold:
+                return _reject(409, "reusable_hold_unavailable")
             if inputs.grant.continuous_hold:
                 # 放行点已核实独立回中。先启用断流看门狗，随后等待新的实体按压周期。
                 self._lease = _Lease(secrets.token_urlsafe(24), inputs.grant, None,
                                      command_deadline=now + self._limits.deadman_s,
-                                     neutral_hold_epoch=inputs.operator_hold.value.epoch)
+                                     neutral_hold_epoch=inputs.operator_hold.value.epoch,
+                                     reusable_hold=reusable)
                 self._last_grant = inputs.grant.serial
-                return 200, {"ok": True, "session_id": self._lease.session_id, "continuous_hold": True}
+                receipt = {"ok": True, "session_id": self._lease.session_id, "continuous_hold": True}
+                if reusable:
+                    receipt["reusable_hold"] = True
+                return 200, receipt
             if inputs.grant.repeated_actions:
                 self._lease = _Lease(secrets.token_urlsafe(24), inputs.grant, None,
                                      command_deadline=now + self._limits.deadman_s)
@@ -524,7 +584,7 @@ class MaintenanceArbiter:
         with self._lock:
             inputs, now, _ = self._advance()
             lease = self._lease
-            if not lease or lease.session_id != payload["session_id"] or not lease.grant.repeated_actions:
+            if not lease or lease.session_id != payload["session_id"] or not lease.uses_actions:
                 return _reject(409, "invalid_session")
             if lease.action is not None:
                 return _reject(409, "action_stopping" if self._stop_requested_at is not None else "action_release_required")
@@ -537,10 +597,18 @@ class MaintenanceArbiter:
             if self._require_operator_hold:
                 reason = self._check_operator_hold(inputs, now, None, direction)
                 if reason:
+                    if lease.reusable_hold and reason == "operator_hold_direction_mismatch":
+                        self._revoke(reason, inputs, now)
                     return _reject(409, reason)
                 lease.hold_epoch = inputs.operator_hold.value.epoch
+                if lease.reusable_hold and lease.hold_epoch == lease.neutral_hold_epoch:
+                    self._revoke("operator_hold_changed", inputs, now)
+                    return _reject(409, "operator_hold_changed")
             lease.sequence = payload["sequence"]
             lease.command_deadline = now + self._limits.deadman_s
+            if lease.reusable_hold:
+                lease.action = _Action(lease.sequence, direction, None)
+                return 200, {"ok": True, "action_id": lease.action.action_id}
             lease.action = _Action(lease.sequence, direction, now + self._limits.lease_s)
             return 200, {"ok": True, "action_id": lease.action.action_id,
                          "expires_in_ms": math.floor(self._limits.lease_s * 1000)}
@@ -553,7 +621,7 @@ class MaintenanceArbiter:
         with self._lock:
             inputs, now, _ = self._advance()
             lease = self._lease
-            if not lease or lease.session_id != payload["session_id"] or not lease.grant.repeated_actions:
+            if not lease or lease.session_id != payload["session_id"] or not lease.uses_actions:
                 return _reject(409, "invalid_session")
             action_id = payload["action_id"]
             if action_id == lease.last_released_action:
@@ -594,7 +662,7 @@ class MaintenanceArbiter:
             if seq <= lease.sequence:
                 return _reject(409, "stale_sequence")
             deadline = now + self._limits.deadman_s
-            if not lease.grant.repeated_actions:
+            if not lease.uses_actions:
                 if "action_id" in payload:
                     return _reject(400, "invalid_velocity")
                 if not lease.grant.continuous_hold:
@@ -604,19 +672,24 @@ class MaintenanceArbiter:
                 # 漏掉松键时仍按上一个有效运动包的期限停车。
                 if lease.direction is not None:
                     return _reject(409, "idle_heartbeat_after_motion")
+                if lease.reusable_hold and lease.action is not None and not lease.action.released:
+                    # 独立键盘已经停车时，漏掉松键的页面不能靠零速心跳继续保留本段。
+                    return _reject(409, "action_release_required")
                 lease.sequence, lease.command_deadline = seq, deadline
                 return 200, {"ok": True}
             direction = command_direction(linear, angular)
             action = lease.action
-            if lease.grant.repeated_actions:
+            if lease.uses_actions:
                 if action is None or payload.get("action_id") != action.action_id:
                     return _reject(409, "invalid_action")
                 if action.ended:
                     return _reject(409, "action_expired")
                 if action.direction is not direction:
+                    if lease.reusable_hold:
+                        self._revoke("operator_hold_direction_mismatch", inputs, now)
                     return _reject(409, "direction_not_authorized")
                 # 动作时钟和有效速度包间隔分别校验。速度包只能刷新间隔，不能续期动作。
-                action_deadline = min(deadline, action.expires_at)
+                action_deadline = min(deadline, action.expires_at) if action.expires_at is not None else deadline
             else:
                 action_deadline = deadline
             if direction not in self._directions(inputs, now) or direction not in inputs.grant.directions:
@@ -634,9 +707,18 @@ class MaintenanceArbiter:
                 # 独立采样也约束该速度包的有效时间，网络保活不能把旧样本续到采样期限之外。
                 action_deadline = min(action_deadline, hold.observed_at + self._limits.max_sample_age_s)
             request = VelocityRequest(lease.session_id, seq, lease.grant.serial, now, action_deadline,
-                                      linear, angular, lease.hold_epoch)
+                                      linear, angular, lease.hold_epoch, lease.reusable_hold,
+                                      require_standstill=lease.reusable_hold and lease.direction is None)
             try:
                 accepted = self._output.velocity(request) is True
+            except HoldReleasedBeforeOutput:
+                # 松键可能恰好发生在仲裁读取与 SDK 复核之间。重新检查独立样本及全部会话门禁。
+                inputs, now, _ = self._advance()
+                if self._lease is not lease:
+                    return _reject(409, "invalid_session")
+                if lease.reusable_hold and action.ended:
+                    return _reject(409, "action_expired")
+                accepted = False
             except Exception:
                 accepted = False
             if not accepted:

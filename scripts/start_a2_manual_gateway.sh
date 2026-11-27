@@ -10,12 +10,16 @@ set -u
 # 现场用固定发布树中的入口接入。整个启动过程不加载底盘 SDK，不创建放行标志。
 entry=$(readlink -f -- "${BASH_SOURCE[0]}")
 root=$(dirname -- "$(dirname -- "$entry")")
-reset_args=()
+socket_args=()
 if [[ -n "${A2_STOP_RESET_SOCKET:-}" ]]; then
   # 仅独立遥控网关可以接入受管的本机复位套接字。
-  reset_args=(--stop-reset-socket "$A2_STOP_RESET_SOCKET")
+  socket_args=(--stop-reset-socket "$A2_STOP_RESET_SOCKET")
+fi
+if [[ -n "${A2_MANUAL_ARM_SOCKET:-}" ]]; then
+  # 只启用管理员在 PC2 单独登记的授权入口。
+  socket_args+=(--manual-arm-socket "$A2_MANUAL_ARM_SOCKET")
 fi
 exec /usr/bin/python3 "$root/scripts/run_a2_console.py" --role pc2 \
   --host 127.0.0.1 --port 18777 --enable-manual-control \
   --manual-key-file "$CREDENTIALS_DIRECTORY/manual.key" --manual-socket /run/a2-manual/receiver.sock \
-  "${reset_args[@]}"
+  "${socket_args[@]}"

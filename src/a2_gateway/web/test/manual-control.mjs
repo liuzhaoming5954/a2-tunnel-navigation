@@ -11,12 +11,15 @@ import { build } from 'vite'
 function installReceiver() {
   const receiver = { mode: 'manual_control', source: 'mock', online: true, network: true, armed: false,
     session: 0, moves: [], heartbeats: [], velocityCalls: 0, stops: 0, ttl: 3000, stateReplies: 0, telemetryReplies: 0, resets: [],
-    repeatedActions: false, action: null, actionTtl: 900, actionStarts: [], actionReleases: [], holdRejections: 0 }
+    repeatedActions: false, action: null, actionTtl: 900, actionStarts: [], actionReleases: [], holdRejections: 0,
+    sessionRequests: [] }
   window.receiver = receiver
+  const actionProtocol = () => receiver.repeatedActions || receiver.sessionReusable
   const advanceAction = () => {
     const action = receiver.action
     const now = performance.now()
-    if (!action) return 'ready'
+    if (!action) return receiver.sessionReusable && receiver.standstillPending ? 'standstill_pending' : 'ready'
+    if (receiver.sessionReusable && receiver.keyboardReleased && action.stopAt === null) action.stopAt = now + 200
     if (action.stopAt === null && now >= action.deadline) action.stopAt = now + 200
     if (action.stopAt === null) return 'active'
     if (now < action.stopAt) return 'stopping'
@@ -33,17 +36,20 @@ function installReceiver() {
       // 故意固定控制能力为可用，单独检验前端对独立守护报告的门控。
       if (receiver.holdState) await new Promise(resolve => { receiver.releaseState = resolve })
       receiver.stateReplies++
-      const actionState = receiver.repeatedActions && receiver.armed ? advanceAction() : null
+      const actionState = actionProtocol() && receiver.armed ? advanceAction() : null
       return reply({
         deployment: receiver.mode === 'simulator' ? 'simulator' : 'station', mode: receiver.mode,
         pc2_connected: receiver.online, robot: { online: receiver.online, ...receiver.robotDetails }, map: null, pose: null,
         independent_telemetry: receiver.independentTelemetry,
         remote_stop: receiver.remoteStop,
         stop_reset: receiver.stopReset,
-        control: { available: true, armed: receiver.online && receiver.armed, source: receiver.online ? receiver.source : null,
+        control: { available: !receiver.oneClick || receiver.armed,
+          activation_available: receiver.oneClick === true && !receiver.armed && !receiver.armStarting,
+          armed: receiver.online && receiver.armed, source: receiver.online ? receiver.source : null,
           limits: { linear_mps: receiver.mode === 'manual_control' ? 0.20 : 0.05,
             angular_radps: receiver.mode === 'manual_control' ? Math.PI / 18 : 0.1,
             ...(receiver.mode === 'manual_control' ? { forward_mps: 0.20 } : {}) },
+          ...(receiver.reusableHold ? { reusable_hold: true } : {}),
           ...(actionState ? { action_state: actionState, action_id: receiver.action?.id } : {}) },
       })
     }
@@ -62,11 +68,19 @@ function installReceiver() {
       return rejection ? reply({ ok: false, reason: rejection }, 409) : reply({ ok: true })
     }
     if (path === '/api/control/session') {
+      receiver.sessionRequests.push(command)
+      if (receiver.oneClick) {
+        receiver.armStarting = true
+        await new Promise(resolve => setTimeout(resolve, 420))
+        receiver.armStarting = false
+      }
       receiver.armed = true
       receiver.hasMoved = false
       receiver.sequence = 0
       receiver.action = null
-      const policy = receiver.continuousHold ? { continuous_hold: true, ...receiver.continuousReceiptFields }
+      receiver.sessionReusable = receiver.reusableHold && command.reusable_hold === true
+      const policy = receiver.continuousHold ? { continuous_hold: true,
+        ...(receiver.sessionReusable ? { reusable_hold: true } : {}), ...receiver.continuousReceiptFields }
         : receiver.repeatedActions ? { repeated_actions: true, action_limit_ms: 30000 } : { expires_in_ms: receiver.ttl }
       return reply({ ok: true, session_id: String(++receiver.session), ...policy })
     }
@@ -77,15 +91,19 @@ function installReceiver() {
         await new Promise(resolve => { receiver.resumeActionStart = resolve })
       }
       if (command.sequence <= receiver.sequence) return reply({ ok: false, reason: 'stale_sequence' }, 409)
-      if (advanceAction() !== 'ready') return reply({ ok: false, reason: 'action_not_ready' }, 409)
+      const actionState = advanceAction()
+      if (actionState === 'standstill_pending') return reply({ ok: false, reason: 'standstill_required' }, 409)
+      if (actionState !== 'ready') return reply({ ok: false, reason: 'action_not_ready' }, 409)
       if (receiver.keyboardReleased) {
         receiver.holdRejections++
         return reply({ ok: false, reason: 'operator_hold_released' }, 409)
       }
       receiver.sequence = command.sequence
-      receiver.action = { id: command.sequence, deadline: performance.now() + receiver.actionTtl, released: false, stopAt: null }
+      const duration = receiver.sessionReusable ? Infinity : receiver.actionTtl
+      receiver.action = { id: command.sequence, deadline: performance.now() + duration, released: false, stopAt: null }
       receiver.actionStarts.push(command)
-      return reply({ ok: true, action_id: command.sequence, expires_in_ms: receiver.actionTtl })
+      return reply({ ok: true, action_id: command.sequence,
+        ...(receiver.sessionReusable ? {} : { expires_in_ms: duration }) })
     }
     if (path === '/api/control/action/release') {
       if (command.sequence <= receiver.sequence) return reply({ ok: false, reason: 'stale_sequence' }, 409)
@@ -99,7 +117,11 @@ function installReceiver() {
     }
     if (path === '/api/control/velocity') {
       if (command.sequence <= receiver.sequence) return reply({ ok: false, reason: 'stale_sequence' }, 409)
-      if ((command.linear_mps !== 0 || command.angular_radps !== 0) && receiver.keyboardReleased) {
+      const moving = command.linear_mps !== 0 || command.angular_radps !== 0
+      if (moving && receiver.sessionReusable && advanceAction() !== 'active') {
+        return reply({ ok: false, reason: 'action_expired' }, 409)
+      }
+      if (moving && receiver.keyboardReleased) {
         receiver.holdRejections++
         const delay = receiver.nextHoldRejectDelayMs
         receiver.nextHoldRejectDelayMs = 0
@@ -108,8 +130,8 @@ function installReceiver() {
         return reply({ ok: false, reason: 'operator_hold_released' }, 409)
       }
       receiver.sequence = command.sequence
-      if (command.linear_mps === 0 && command.angular_radps === 0) {
-        if ((!receiver.repeatedActions && receiver.hasMoved) || receiver.mode !== 'manual_control') return reply({ ok: false }, 409)
+      if (!moving) {
+        if ((!actionProtocol() && receiver.hasMoved) || receiver.mode !== 'manual_control') return reply({ ok: false }, 409)
         receiver.heartbeats.push({ ...command, at: performance.now() })
         // 模拟零帧已到 PC2，但它的失败响应直到第一条非零指令成功之后才到浏览器。
         if (receiver.delayNextHeartbeat) {
@@ -118,7 +140,7 @@ function installReceiver() {
           return reply({ ok: false, reason: 'stale_sequence' }, 409)
         }
       } else {
-        if (receiver.repeatedActions && (advanceAction() !== 'active' || command.action_id !== receiver.action?.id)) {
+        if (actionProtocol() && (advanceAction() !== 'active' || command.action_id !== receiver.action?.id)) {
           return reply({ ok: false, reason: 'action_expired' }, 409)
         }
         receiver.hasMoved = true
@@ -651,6 +673,116 @@ async function exerciseControls() {
     key('keyup', 'ArrowUp')
     await until(() => !r.armed, '持续按压松键未结束会话')
     await quiet()
+
+    // 新 PC2 允许在同一启用会话中反复按下、松开。每次新按下仍有独立的动作号。
+    r.reusableHold = true
+    r.oneClick = true
+    r.source = 'unitree'
+    r.remoteStop = { source: 'pc2_systemd', guard: 'running', latched: true, age_ms: 0, max_age_ms: 2500 }
+    await until(() => arm().disabled && text('.control-note').includes('停车已锁存'), '可重复按键模式绕过停车锁存')
+    r.remoteStop.latched = false
+    await acquire('同会话连续遥控')
+    const reusableSession = r.session
+    const preReuseStop = r.stops
+    const stateAfterAcquire = r.stateReplies
+    await until(() => r.stateReplies > stateAfterAcquire, '同会话连续遥控未确认已启用的 PC2 动作状态')
+    await sleep(20)
+    expect(r.sessionRequests.at(-1).reusable_hold === true, '页面未显式协商同会话连续遥控')
+    expect(text('.stop-button').includes('关闭控制') && text('.control-note').includes('松键停车'),
+      '未说明同会话松键停车或未提供关闭控制')
+    // 待命时停稳判据暂未满足。保留会话并明确等待，但不能补发这期间的按键。
+    const waitingMoves = r.moves.length
+    const waitingStarts = r.actionStarts.length
+    const waitingHeartbeats = r.heartbeats.length
+    r.standstillPending = true
+    await until(() => text('.control-state').includes('已启用，等待停稳'), '待命失去停稳判据后未显示等待')
+    key('keydown', 'ArrowUp')
+    await until(() => r.heartbeats.length >= waitingHeartbeats + 2, '等待停稳期间未维持零速心跳')
+    r.standstillPending = false
+    await until(() => document.querySelector('.control-state.ready'), '新鲜停稳反馈未恢复待命')
+    key('keydown', 'ArrowUp', true)
+    key('keyup', 'ArrowUp')
+    expect(r.actionStarts.length === waitingStarts && r.moves.length === waitingMoves,
+      '等待停稳期间的方向键在恢复停稳后补发了动作')
+    expect(r.armed && r.stops === preReuseStop && r.session === reusableSession,
+      '临时等待停稳撤销了控制会话')
+
+    // 页面看到停稳与 PC2 收到动作请求之间，机身可能重新进入停稳确认。
+    r.holdActionStart = true
+    key('keydown', 'ArrowUp')
+    await until(() => r.resumeActionStart, '未发出需暂缓的动作请求')
+    r.standstillPending = true
+    r.resumeActionStart()
+    r.resumeActionStart = undefined
+    await until(() => text('.control-state').includes('已启用，等待停稳'), '起步明确被停稳判据拒绝后未进入等待')
+    r.standstillPending = false
+    await until(() => document.querySelector('.control-state.ready'), '起步拒绝后未用新鲜反馈恢复待命')
+    key('keydown', 'ArrowUp', true)
+    key('keyup', 'ArrowUp')
+    expect(r.armed && r.stops === preReuseStop && r.session === reusableSession
+      && r.actionStarts.length === waitingStarts && r.moves.length === waitingMoves,
+      '停稳拒绝导致撤权或重新发送了上一个按键')
+    for (const [name, direction, linear, angular] of [
+      ['ArrowUp', 'forward', .20, 0], ['s', 'backward', -.20, 0],
+      ['ArrowLeft', 'left', 0, turn], ['d', 'right', 0, -turn],
+    ]) {
+      const startsBefore = r.actionStarts.length
+      key('keydown', name)
+      await until(() => r.actionStarts.length > startsBefore && r.moves.at(-1)?.action_id === r.action?.id,
+        `同会话没有收到新的方向动作 ${name}`)
+      const { id } = r.action
+      const move = r.moves.at(-1)
+      expect(!remaining() && r.actionStarts.at(-1).direction === direction
+        && move.linear_mps === linear && move.angular_radps === angular, '新动作的方向、速度或期限错误')
+      key('keyup', name)
+      await until(() => r.actionReleases.at(-1)?.action_id === id, '松键未发送本段释放')
+      const stoppedMoves = r.moves.length
+      key('keydown', 'ArrowDown')
+      await until(() => document.querySelector('.control-state.ready'), '停稳后未恢复已启用状态')
+      expect(r.armed && r.session === reusableSession && r.stops === preReuseStop, '松键撤掉了本场会话')
+      expect(r.actionStarts.length === startsBefore + 1 && r.moves.length === stoppedMoves,
+        '停稳时提前按下的方向键被排队发送')
+    }
+    // 独立键盘先观测到松开，但网页漏收：暂停零帧，避免给没有松键确认的会话续命。
+    key('keydown', 'ArrowUp')
+    await until(() => r.action && r.moves.at(-1)?.action_id === r.action.id, '无法开始漏收松键验证')
+    const unchangedHeartbeats = r.heartbeats.length
+    r.keyboardReleased = true
+    await until(() => document.querySelector('.control-state.release_required'), '独立松键后页面未停止发送旧方向')
+    key('keydown', 'ArrowUp', true)
+    await sleep(200)
+    expect(r.heartbeats.length === unchangedHeartbeats, '未收到浏览器松键时仍发送零帧保活')
+    key('keyup', 'ArrowUp')
+    await until(() => document.querySelector('.control-state.ready'), '浏览器收到松键后未恢复已启用')
+    r.keyboardReleased = false
+    document.querySelector('.stop-button').click()
+    await until(() => !r.armed && ready(), '关闭控制未结束同会话连续遥控')
+    await quiet()
+    expect(r.session === reusableSession, '连续操作额外启用了控制会话')
+    // 探测到单击启用能力只开放按钮。PC2 完成准备前不允许发送方向请求。
+    r.reusableHold = false
+    r.oneClick = true
+    r.source = 'unitree'
+    r.remoteStop = { source: 'pc2_systemd', guard: 'running', latched: true, age_ms: 0, max_age_ms: 2500 }
+    await until(() => arm().disabled && text('.control-note').includes('停车已锁存'), '单击启用绕过停车锁存')
+    r.remoteStop = { ...r.remoteStop, latched: false }
+    const oneClickPrior = r.session
+    const oneClickMoves = r.moves.length
+    const oneClickHeartbeats = r.heartbeats.length
+    await until(() => !arm().disabled, '未显示单击启用按钮')
+    expect(r.session === oneClickPrior, '只读状态查询触发了启用')
+    arm().click()
+    await until(() => r.armStarting, '单击未请求 PC2 启用')
+    key('keydown', 'ArrowDown')
+    key('keyup', 'ArrowDown')
+    await until(() => r.heartbeats.length > oneClickHeartbeats, '启用后未开始零速保活')
+    expect(r.armed && r.moves.length === oneClickMoves, '未确认会话时出现运动')
+    await until(() => arm().textContent.includes('控制已启用'), '未确认单击启用后的真实会话')
+    key('keydown', 'ArrowDown')
+    await until(() => r.moves.length > oneClickMoves && r.moves.at(-1).linear_mps < 0, '单击启用后无法后退')
+    key('keyup', 'ArrowDown')
+    await until(() => !r.armed && !arm().disabled, '松键后未恢复可重新启用状态')
+    expect(r.session === oneClickPrior + 1, '松键后自动重新申请了会话')
     result.textContent = 'PASS'
   } catch (error) { result.textContent = String(error) }
 }

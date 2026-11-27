@@ -16,7 +16,7 @@ SESSION_PATTERN = re.compile(r"[A-Za-z0-9_-]{16,128}\Z")
 MAX_SEQUENCE = (1 << 53) - 1
 MAX_ACTION_MS = 30_000
 ACTION_DIRECTIONS = frozenset(("forward", "backward", "left", "right"))
-ACTION_STATES = frozenset(("ready", "active", "stopping", "release_required"))
+ACTION_STATES = frozenset(("ready", "standstill_pending", "active", "stopping", "release_required"))
 
 
 def _response_error(status, reason):
@@ -38,6 +38,12 @@ def _finite_number(value):
 
 def _sequence_id(value):
     return type(value) is int and 1 <= value <= MAX_SEQUENCE
+
+
+def _acquire_request(payload):
+    # 旧客户端可继续传空对象。新模式必须明确选择，不能从含糊的字段推断。
+    return (isinstance(payload, dict) and (not payload or
+            (set(payload) == {"reusable_hold"} and payload["reusable_hold"] is True)))
 
 
 def _velocity_request(payload):
@@ -69,7 +75,7 @@ def _control_action_fields(control):
     if "action_state" not in control and "action_id" not in control:
         return {}
     state, identifier = control.get("action_state"), control.get("action_id")
-    valid_id = identifier is None if state == "ready" else _sequence_id(identifier)
+    valid_id = identifier is None if state in ("ready", "standstill_pending") else _sequence_id(identifier)
     if (control.get("armed") is not True or not isinstance(state, str) or state not in ACTION_STATES
             or not valid_id):
         raise ValueError("Invalid motion action state")
@@ -82,6 +88,13 @@ def _command_receipt(operation, payload, reply):
         session = reply.get("session_id")
         if not _session_id(session):
             raise ValueError("Invalid session issued by the motion service")
+        if payload.get("reusable_hold") is True:
+            if (set(reply) != {"ok", "session_id", "continuous_hold", "reusable_hold"}
+                    or reply["continuous_hold"] is not True or reply["reusable_hold"] is not True):
+                raise ValueError("Invalid reusable hold session issued by the motion service")
+            return {"ok": True, "session_id": session, "continuous_hold": True, "reusable_hold": True}
+        if "reusable_hold" in reply:
+            raise ValueError("Unexpected reusable hold session")
         if "continuous_hold" in reply:
             # 持续按压与限时、连续点动使用互斥的回执格式。含糊的回执不能放行。
             if reply["continuous_hold"] is not True or set(reply) != {"ok", "session_id", "continuous_hold"}:
@@ -99,8 +112,12 @@ def _command_receipt(operation, payload, reply):
         return {"ok": True, "session_id": session, "expires_in_ms": expires}
     if operation == "action_start":
         identifier, expires = reply.get("action_id"), reply.get("expires_in_ms")
-        if (not _sequence_id(identifier) or identifier != payload["sequence"]
-                or type(expires) is not int or not 1 <= expires <= MAX_ACTION_MS):
+        if not _sequence_id(identifier) or identifier != payload["sequence"]:
+            raise ValueError("Invalid action receipt issued by the motion service")
+        if set(reply) == {"ok", "action_id"}:
+            # 无单段时限的回执仅供协商到持续按住模式的客户端使用。
+            return {"ok": True, "action_id": identifier}
+        if type(expires) is not int or not 1 <= expires <= MAX_ACTION_MS:
             raise ValueError("Invalid action receipt issued by the motion service")
         return {"ok": True, "action_id": identifier, "expires_in_ms": expires}
     return {"ok": True}
@@ -192,7 +209,8 @@ class LocalMotionClient:
                 raise ValueError("Invalid motion service limits")
             return {**origin, "available": True, "armed": control["armed"],
                     "reason": self._reason(control, "ready"),
-                    "limits": {key: limits[key] for key in keys}, **_control_action_fields(control)}
+                    "limits": {key: limits[key] for key in keys}, **_control_action_fields(control),
+                    **({"reusable_hold": True} if control.get("reusable_hold") is True else {})}
         except (AttributeError, OSError, ValueError):
             return self._unavailable("motion_arbiter_unavailable")
 
@@ -202,12 +220,12 @@ class LocalMotionClient:
         return reason if isinstance(reason, str) and 0 < len(reason) <= 160 else fallback
 
     def acquire(self, payload):
-        if payload != {}:
+        if not _acquire_request(payload):
             return _response_error(400, "invalid_request")
         control = self.state()
         if not control["available"]:
             return _response_error(409, control["reason"])
-        return self._relay("acquire", {})
+        return self._relay("acquire", payload)
 
     def velocity(self, payload):
         if not _velocity_request(payload):

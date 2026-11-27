@@ -39,6 +39,7 @@ PC2_FILES = (
     "scripts/observe_a2_manual_safety.py",
     "scripts/observe_a2_front_lidar.py",
     "scripts/operate_a2_stop_reset.py",
+    "scripts/operate_a2_manual_arm.py",
     "scripts/a2_remote_stop.py",
     "scripts/a2_remote_stop_sdk.py",
     "scripts/probe_a2_sport.py",
@@ -51,6 +52,10 @@ PC2_FILES = (
     "deploy/templates/a2-keyboard-hold.service",
     "deploy/templates/a2-vendor-owner.service",
     "deploy/templates/a2-cockpit-manual-gateway.service",
+    "deploy/templates/a2-cockpit-manual-arm.conf",
+    "deploy/templates/a2-cockpit-arm.socket",
+    "deploy/templates/a2-cockpit-arm@.service",
+    "deploy/templates/a2-cockpit-control-sshd.conf.example",
     "deploy/templates/a2-stop-reset.socket",
     "deploy/templates/a2-stop-reset@.service",
     "deploy/templates/a2-autonomy-stop-reset.conf",
@@ -75,6 +80,8 @@ PC2_FILES = (
 )
 STATION_FILES = (
     "deploy/templates/a2-cockpit-station.service",
+    "deploy/templates/a2-cockpit-control-link.service",
+    "deploy/templates/a2-cockpit-keyboard-link.service",
     "deploy/templates/a2-keyboard-hold-station.service",
     "deploy/templates/a2-cockpit-link.service",
     "deploy/templates/a2-cockpit-relay.socket",

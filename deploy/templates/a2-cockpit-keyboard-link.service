@@ -1,0 +1,16 @@
+[Unit]
+Description=A2 实体键盘证据回环连接
+# PC2 上线后自动重连，始终使用同一个本地回环入口。
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+UMask=0077
+NoNewPrivileges=yes
+# 独立 TCP 只承载键盘挑战及应答，避免与控制查询共用队列。
+ExecStart=/usr/bin/ssh -F %h/.config/a2-cockpit/ssh_config -N -T -o ControlMaster=no -o ControlPath=none -o ClearAllForwardings=no -o ExitOnForwardFailure=yes -L 127.0.0.1:18778:127.0.0.1:18778 a2-cockpit-pc2-control
+Restart=always
+RestartSec=3s
+
+[Install]
+WantedBy=default.target
